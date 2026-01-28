@@ -1,0 +1,8 @@
+flask
+pandas
+numpy
+requests
+beautifulsoup4
+binance-connector
+plotly
+gunicorn
