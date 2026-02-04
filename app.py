@@ -7,7 +7,7 @@ import time
 import requests
 import re 
 from difflib import SequenceMatcher
-from datetime import datetime
+from datetime import datetime, timedelta  # 👈 新增 timedelta 用來修正時差
 from typing import List, Dict
 from functools import wraps
 from dataclasses import dataclass
@@ -37,6 +37,10 @@ class Config:
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 app = Flask(__name__)
 np.seterr(divide='ignore', invalid='ignore')
+
+# 🕒 台灣時間小幫手 (修正 Render 時區問題)
+def get_tw_time():
+    return datetime.utcnow() + timedelta(hours=8)
 
 # ==========================================
 # 🧬 2. 快取裝飾器
@@ -114,7 +118,7 @@ class DataManager:
         # 確保包含 BTC 和使用者列表中的幣
         target_pairs = [s + 'USDT' for s in (set(top_symbols) | set(Config.COIN_META.keys()) | {'BTC'})]
         
-        # 🔥 修正重點：降速至 4 個執行緒，避免 Render 連線池爆滿
+        # 維持 4 個執行緒以求穩定
         with ThreadPoolExecutor(max_workers=4) as executor:
             future_to_symbol = {executor.submit(DataManager.get_kline_safe, pair): pair for pair in target_pairs}
             for future in as_completed(future_to_symbol):
@@ -232,7 +236,8 @@ class NewsEngine:
         top_movers = sorted([c for c in crypto_data if c.get('change') is not None], key=lambda x: abs(x['change']), reverse=True)[:3]
         for c in top_movers:
             t, s = (f"【AI看多】{c['symbol']} 突破阻力", "positive") if c['change']>5 else (f"【風險】{c['symbol']} 賣壓湧現", "negative") if c['change']<-5 else (f"【觀察】{c['symbol']} 盤整中", "neutral")
-            news_feed.append({"time": datetime.now().strftime("%H:%M"), "title": t, "sentiment": s})
+            # 修正時區：新聞時間
+            news_feed.append({"time": get_tw_time().strftime("%H:%M"), "title": t, "sentiment": s})
         return news_feed
 
 # ==========================================
@@ -299,8 +304,9 @@ class SocialMediaEngine:
     @staticmethod
     def scrape_cnyes() -> List[Dict]:
         mock_news = [
-            {"source": "CNYES", "title": "比特幣現貨ETF淨流入創單日新高，機構資金湧入", "author": "鉅亨網", "date": datetime.now().strftime("%m/%d"), "push": 99, "link": "#", "content": "市場數據顯示..."},
-            {"source": "CNYES", "title": "貝萊德 CEO 重申：加密貨幣將成為數位黃金", "author": "鉅亨網", "date": datetime.now().strftime("%m/%d"), "push": 88, "link": "#", "content": "Larry Fink 在訪談中..."}
+            # 修正時區：假資料時間
+            {"source": "CNYES", "title": "比特幣現貨ETF淨流入創單日新高，機構資金湧入", "author": "鉅亨網", "date": get_tw_time().strftime("%m/%d"), "push": 99, "link": "#", "content": "市場數據顯示..."},
+            {"source": "CNYES", "title": "貝萊德 CEO 重申：加密貨幣將成為數位黃金", "author": "鉅亨網", "date": get_tw_time().strftime("%m/%d"), "push": 88, "link": "#", "content": "Larry Fink 在訪談中..."}
         ]
         url = "https://news.cnyes.com/news/cat/bc" 
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -317,7 +323,8 @@ class SocialMediaEngine:
                 if "/news/id/" in href and len(title) > 15:
                     posts.append({
                         "source": "CNYES", "title": title, "author": "鉅亨網",
-                        "date": datetime.now().strftime("%m/%d"), "push": 80,
+                        # 修正時區
+                        "date": get_tw_time().strftime("%m/%d"), "push": 80,
                         "link": "https://news.cnyes.com" + href if not href.startswith("http") else href,
                         "content": "鉅亨網區塊鏈新聞快訊 (Verified)"
                     })
@@ -329,7 +336,8 @@ class SocialMediaEngine:
     @staticmethod
     def scrape_blocktempo() -> List[Dict]:
         mock_news = [
-            {"source": "BlockTempo", "title": "以太坊坎昆升級倒數，Layer 2 幣種全面噴發", "author": "動區", "date": datetime.now().strftime("%m/%d"), "push": 95, "link": "#", "content": "開發者確認進度順利..."},
+            # 修正時區：假資料時間
+            {"source": "BlockTempo", "title": "以太坊坎昆升級倒數，Layer 2 幣種全面噴發", "author": "動區", "date": get_tw_time().strftime("%m/%d"), "push": 95, "link": "#", "content": "開發者確認進度順利..."},
         ]
         url = "https://www.blocktempo.com/category/cryptocurrency-market/"
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -344,7 +352,8 @@ class SocialMediaEngine:
                 if a_tag:
                     posts.append({
                         "source": "BlockTempo", "title": a_tag.get_text().strip(), "author": "動區",
-                        "date": datetime.now().strftime("%m/%d"), "push": 90,
+                        # 修正時區
+                        "date": get_tw_time().strftime("%m/%d"), "push": 90,
                         "link": a_tag['href'], "content": "動區動趨深度報導 (Verified)"
                     })
             return posts if posts else mock_news
@@ -500,7 +509,8 @@ def live_data():
             coin['risk'] = RiskModel.calculate_copula_risk(symbol, history_df, coin.get('is_stable', False), price_usd)
         coin['price_twd'] = price_usd * current_rate
     return jsonify({
-        "timestamp": datetime.now().strftime("%H:%M:%S"),
+        # 修正時區：最後更新時間
+        "timestamp": get_tw_time().strftime("%H:%M:%S"),
         "data": crypto_list, 
         "exchange_rate": current_rate,
         "news": NewsEngine.generate_sentiment_news(crypto_list)
