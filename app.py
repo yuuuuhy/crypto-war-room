@@ -7,7 +7,7 @@ import time
 import requests
 import re 
 from difflib import SequenceMatcher
-from datetime import datetime, timedelta  # 👈 新增 timedelta 用來修正時差
+from datetime import datetime, timedelta
 from typing import List, Dict
 from functools import wraps
 from dataclasses import dataclass
@@ -38,7 +38,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 app = Flask(__name__)
 np.seterr(divide='ignore', invalid='ignore')
 
-# 🕒 台灣時間小幫手 (修正 Render 時區問題)
+# 🕒 台灣時間小幫手
 def get_tw_time():
     return datetime.utcnow() + timedelta(hours=8)
 
@@ -115,7 +115,6 @@ class DataManager:
     @ttl_cache(ttl_seconds=300) 
     def get_historical_df_parallel(top_symbols: List[str]) -> pd.DataFrame:
         data_dict = {}
-        # 確保包含 BTC 和使用者列表中的幣
         target_pairs = [s + 'USDT' for s in (set(top_symbols) | set(Config.COIN_META.keys()) | {'BTC'})]
         
         # 維持 4 個執行緒以求穩定
@@ -124,13 +123,13 @@ class DataManager:
             for future in as_completed(future_to_symbol):
                 try:
                     symbol, prices = future.result()
-                    if prices and len(prices) > 10: # 確保數據長度足夠
+                    if prices and len(prices) > 10: 
                         data_dict[symbol.replace('USDT', '')] = prices
                 except: pass
 
         if 'BTC' not in data_dict: return pd.DataFrame()
         
-        # 對齊數據長度 (以最短的為準)
+        # 對齊數據長度
         min_len = min([len(v) for v in data_dict.values()])
         final_dict = {k: v[-min_len:] for k, v in data_dict.items()}
         return pd.DataFrame(final_dict)
@@ -177,7 +176,7 @@ class MonteCarloEngine:
 class RiskModel:
     @staticmethod
     def calculate_copula_risk(symbol: str, df: pd.DataFrame, is_stable: bool, current_price: float) -> Dict:
-        # 預設的回傳結構
+        # 預設回傳
         default_res = {"level": "base", "msg": "資料不足", "corr": 0, "score": 50, "lambda": 0, "beta": 0, "stress": {}}
         
         try:
@@ -189,7 +188,9 @@ class RiskModel:
             
             if len(target_df) < 10 or returns['BTC'].std() == 0: return default_res
 
-            corr = returns['BTC'].corr(returns[symbol], method='spearman')
+            # 🔥 關鍵修改：改成 'pearson'，不需要 scipy 套件也能跑！
+            corr = returns['BTC'].corr(returns[symbol], method='pearson')
+            
             u, v = returns['BTC'].rank(pct=True), returns[symbol].rank(pct=True)
             
             crash_together = np.sum((u <= 0.2) & (v <= 0.2))
@@ -206,7 +207,6 @@ class RiskModel:
             else:
                 tail_beta = 1.0
             
-            # 🔥 防呆機制：處理 NaN 或無限大
             if np.isnan(tail_beta) or np.isinf(tail_beta): tail_beta = 1.0
             if np.isnan(lambda_lower): lambda_lower = 0.5
             if np.isnan(corr): corr = 0.5
@@ -226,8 +226,9 @@ class RiskModel:
 
             return {"level": level, "msg": msg, "corr": round(corr, 2), "lambda": round(lambda_lower, 2), "beta": round(tail_beta, 2), "score": sfi_score, "stress": {"s10": predicted_price}}
         except Exception as e:
-            # 發生任何計算錯誤，回傳安全的中立值，不要讓程式崩潰
-            return {"level": "warning", "msg": "計算中", "corr": 0.5, "score": 50, "lambda": 0, "beta": 1, "stress": {}}
+            # 印出錯誤到後台，方便除錯
+            print(f"Error calculating risk for {symbol}: {e}")
+            return {"level": "warning", "msg": "暫無數據", "corr": 0.5, "score": 50, "lambda": 0, "beta": 1, "stress": {}}
 
 class NewsEngine:
     @staticmethod
@@ -236,12 +237,11 @@ class NewsEngine:
         top_movers = sorted([c for c in crypto_data if c.get('change') is not None], key=lambda x: abs(x['change']), reverse=True)[:3]
         for c in top_movers:
             t, s = (f"【AI看多】{c['symbol']} 突破阻力", "positive") if c['change']>5 else (f"【風險】{c['symbol']} 賣壓湧現", "negative") if c['change']<-5 else (f"【觀察】{c['symbol']} 盤整中", "neutral")
-            # 修正時區：新聞時間
             news_feed.append({"time": get_tw_time().strftime("%H:%M"), "title": t, "sentiment": s})
         return news_feed
 
 # ==========================================
-# 📡 5. 社群媒體引擎 (V8: 全網監控 + 保底顯示)
+# 📡 5. 社群媒體引擎
 # ==========================================
 class SocialMediaEngine:
     FATAL_NOISE_KEYWORDS = ["閒聊", "好爽", "畢業", "塊陶", "公園", "薯條", "便當", "信仰", "崩盤", "丸子", "蒸的", "睡飽", "財富自由", "睏霸", "韭菜", "舒服", "下去", "這波", "笑死", "甚至", "乾爹", "崩", "噴", "接刀", "水桶", "公告", "版規", "協尋", "詐騙", "入群", "群組", "怎麼看", "大家", "覺得", "是否", "請問", "請益", "新手", "小白", "這隻", "推薦", "？", "?"]
@@ -304,7 +304,6 @@ class SocialMediaEngine:
     @staticmethod
     def scrape_cnyes() -> List[Dict]:
         mock_news = [
-            # 修正時區：假資料時間
             {"source": "CNYES", "title": "比特幣現貨ETF淨流入創單日新高，機構資金湧入", "author": "鉅亨網", "date": get_tw_time().strftime("%m/%d"), "push": 99, "link": "#", "content": "市場數據顯示..."},
             {"source": "CNYES", "title": "貝萊德 CEO 重申：加密貨幣將成為數位黃金", "author": "鉅亨網", "date": get_tw_time().strftime("%m/%d"), "push": 88, "link": "#", "content": "Larry Fink 在訪談中..."}
         ]
@@ -323,7 +322,6 @@ class SocialMediaEngine:
                 if "/news/id/" in href and len(title) > 15:
                     posts.append({
                         "source": "CNYES", "title": title, "author": "鉅亨網",
-                        # 修正時區
                         "date": get_tw_time().strftime("%m/%d"), "push": 80,
                         "link": "https://news.cnyes.com" + href if not href.startswith("http") else href,
                         "content": "鉅亨網區塊鏈新聞快訊 (Verified)"
@@ -336,7 +334,6 @@ class SocialMediaEngine:
     @staticmethod
     def scrape_blocktempo() -> List[Dict]:
         mock_news = [
-            # 修正時區：假資料時間
             {"source": "BlockTempo", "title": "以太坊坎昆升級倒數，Layer 2 幣種全面噴發", "author": "動區", "date": get_tw_time().strftime("%m/%d"), "push": 95, "link": "#", "content": "開發者確認進度順利..."},
         ]
         url = "https://www.blocktempo.com/category/cryptocurrency-market/"
@@ -352,7 +349,6 @@ class SocialMediaEngine:
                 if a_tag:
                     posts.append({
                         "source": "BlockTempo", "title": a_tag.get_text().strip(), "author": "動區",
-                        # 修正時區
                         "date": get_tw_time().strftime("%m/%d"), "push": 90,
                         "link": a_tag['href'], "content": "動區動趨深度報導 (Verified)"
                     })
@@ -496,7 +492,6 @@ def live_data():
     crypto_list = DataManager.get_all_tickers()
     if not crypto_list: return jsonify({"timestamp": "--:--", "data": [], "exchange_rate": Config.DEFAULT_EXCHANGE_RATE})
     top_symbols = [c['symbol'] for c in crypto_list]
-    # 這裡會使用降速後的平行爬蟲
     history_df = DataManager.get_historical_df_parallel(top_symbols)
     current_rate = DataManager.get_realtime_exchange_rate()
     for coin in crypto_list:
@@ -505,11 +500,9 @@ def live_data():
         if symbol == 'BTC': 
             coin['risk'] = {"level": "base", "msg": "⚓ 市場基準", "corr": 1.0, "score": 0, "lambda": 0, "beta": 1, "stress": {"s10": price_usd * 0.9}}
         else: 
-            # 這裡加入了防呆計算
             coin['risk'] = RiskModel.calculate_copula_risk(symbol, history_df, coin.get('is_stable', False), price_usd)
         coin['price_twd'] = price_usd * current_rate
     return jsonify({
-        # 修正時區：最後更新時間
         "timestamp": get_tw_time().strftime("%H:%M:%S"),
         "data": crypto_list, 
         "exchange_rate": current_rate,
