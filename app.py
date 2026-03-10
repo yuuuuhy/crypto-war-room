@@ -6,7 +6,6 @@ import logging
 import time
 import requests
 import re 
-from difflib import SequenceMatcher
 from datetime import datetime
 from typing import List, Dict
 from functools import wraps
@@ -92,27 +91,38 @@ class DataManager:
                 item['risk'] = {} 
                 final_list.append(item)
             return final_list
-        except: return []
+        except Exception as e: 
+            print(f"⚠️ 幣安 API 抓取失敗，原因: {e}")
+            return []
 
     @staticmethod
     def get_kline_safe(symbol: str):
         try:
             klines = DataManager.client.klines(symbol, "1h", limit=120)
             return symbol, [float(k[4]) for k in klines]
-        except: return symbol, []
+        except Exception as e:
+            print(f"⚠️ K線抓取失敗 {symbol}: {e}")
+            return symbol, []
 
     @staticmethod
     @ttl_cache(ttl_seconds=300) 
     def get_historical_df_parallel(top_symbols: List[str]) -> pd.DataFrame:
         data_dict = {}
-        target_pairs = [s + 'USDT' for s in (set(top_symbols) | set(Config.COIN_META.keys()) | {'BTC'})]
-        with ThreadPoolExecutor(max_workers=20) as executor:
-            future_to_symbol = {executor.submit(DataManager.get_kline_safe, pair): pair for pair in target_pairs}
-            for future in as_completed(future_to_symbol):
-                try:
-                    symbol, prices = future.result()
-                    if prices: data_dict[symbol.replace('USDT', '')] = prices
-                except: pass
+        # 🔥 降壓秘訣 1：只抓前 10 名的熱門幣，保護免費主機
+        target_pairs = [s + 'USDT' for s in top_symbols[:10]]
+        if 'BTCUSDT' not in target_pairs:
+            target_pairs.append('BTCUSDT')
+            
+        # 🔥 降壓秘訣 2：乖乖排隊抓資料，絕不塞爆連線池
+        for pair in target_pairs:
+            try:
+                symbol, prices = DataManager.get_kline_safe(pair)
+                if prices: 
+                    data_dict[symbol.replace('USDT', '')] = prices
+                time.sleep(0.1) # 稍微休息 0.1 秒
+            except: 
+                pass
+
         if 'BTC' not in data_dict: return pd.DataFrame()
         min_len = min([len(v) for v in data_dict.values()])
         final_dict = {k: v[-min_len:] for k, v in data_dict.items()}
@@ -195,7 +205,9 @@ class RiskModel:
             returns = target_df.pct_change().dropna()
             if len(target_df) < 10 or returns['BTC'].std() == 0: return {"level": "base", "msg": "資料不足", "corr": 0, "score": 0, "lambda": 0, "beta": 0, "stress": {}}
 
-            corr = returns['BTC'].corr(returns[symbol], method='spearman')
+            # 🔥 終極解藥：移除會讓主機崩潰的 spearman 套件要求，改用原生基礎演算法
+            corr = returns['BTC'].corr(returns[symbol])
+            
             u, v = returns['BTC'].rank(pct=True), returns[symbol].rank(pct=True)
             crash_together = np.sum((u <= 0.2) & (v <= 0.2))
             crash_btc = np.sum(u <= 0.2)
@@ -220,7 +232,9 @@ class RiskModel:
             elif sfi_score >= 40: level, msg = "warning", "⚠️ 中度連動"
             else: level, msg = "safe", "🟢 走勢獨立"
             return {"level": level, "msg": msg, "corr": round(corr, 2), "lambda": round(lambda_lower, 2), "beta": round(tail_beta, 2), "score": sfi_score, "stress": {"s10": predicted_price}}
-        except: return {"level": "base", "msg": "運算錯誤", "corr": 0, "score": 0, "lambda": 0, "beta": 0, "stress": {}}
+        except Exception as e: 
+            print(f"⚠️ {symbol} 運算錯誤: {e}")
+            return {"level": "base", "msg": "運算錯誤", "corr": 0, "score": 0, "lambda": 0, "beta": 0, "stress": {}}
 
 class NewsEngine:
     @staticmethod
@@ -303,9 +317,7 @@ class SocialMediaEngine:
 
     @staticmethod
     def scrape_cnyes() -> List[Dict]:
-        mock_news = [
-            {"source": "CNYES", "title": "比特幣現貨ETF淨流入創單日新高，機構資金湧入", "author": "鉅亨網", "date": datetime.now().strftime("%m/%d"), "push": 99, "link": "#", "content": "市場數據顯示..."}
-        ]
+        mock_news = [{"source": "CNYES", "title": "比特幣現貨ETF淨流入創單日新高", "author": "鉅亨網", "date": datetime.now().strftime("%m/%d"), "push": 99, "link": "#", "content": "市場數據顯示..."}]
         url = "https://news.cnyes.com/news/cat/bc" 
         headers = {"User-Agent": "Mozilla/5.0"}
         posts = []
@@ -332,9 +344,7 @@ class SocialMediaEngine:
 
     @staticmethod
     def scrape_blocktempo() -> List[Dict]:
-        mock_news = [
-            {"source": "BlockTempo", "title": "以太坊升級倒數，Layer 2 幣種全面噴發", "author": "動區", "date": datetime.now().strftime("%m/%d"), "push": 95, "link": "#", "content": "開發者確認進度..."}
-        ]
+        mock_news = [{"source": "BlockTempo", "title": "以太坊升級倒數，Layer 2 幣種噴發", "author": "動區", "date": datetime.now().strftime("%m/%d"), "push": 95, "link": "#", "content": "開發者確認進度..."}]
         url = "https://www.blocktempo.com/category/cryptocurrency-market/"
         headers = {"User-Agent": "Mozilla/5.0"}
         posts = []
@@ -356,21 +366,15 @@ class SocialMediaEngine:
 
     @staticmethod
     def scrape_coindesk() -> List[Dict]:
-        mock_news = [
-            {"source": "CoinDesk", "title": "Bitcoin ETF Sees Record Inflows", "author": "CoinDesk", "date": datetime.now().strftime("%m/%d"), "push": 99, "link": "#", "content": "Global markets react to new SEC approvals..."}
-        ]
+        mock_news = [{"source": "CoinDesk", "title": "Bitcoin ETF Sees Record Inflows", "author": "CoinDesk", "date": datetime.now().strftime("%m/%d"), "push": 99, "link": "#", "content": "Global markets react..."}]
         posts = []
         try:
             feed = feedparser.parse('https://www.coindesk.com/arc/outboundfeeds/rss/')
             for entry in feed.entries[:6]:
                 posts.append({
-                    "source": "CoinDesk", 
-                    "title": entry.title, 
-                    "author": "CoinDesk",
-                    "date": datetime.now().strftime("%m/%d"), 
-                    "push": 85,
-                    "link": entry.link, 
-                    "content": entry.summary[:80] + "..." if 'summary' in entry else "CoinDesk Global News"
+                    "source": "CoinDesk", "title": entry.title, "author": "CoinDesk",
+                    "date": datetime.now().strftime("%m/%d"), "push": 85,
+                    "link": entry.link, "content": entry.summary[:80] + "..." if 'summary' in entry else "CoinDesk Global News"
                 })
             return posts if posts else mock_news
         except: return mock_news
@@ -413,15 +417,8 @@ class SocialMediaEngine:
         
         for post in scored_posts:
             is_media = post['source'] in ['CNYES', 'BlockTempo', 'CoinDesk']
-            
             if is_media or post['quality_score'] >= THRESHOLD:
                 post['type'] = 'signal'
-                tags = []
-                if post['source'] == 'CNYES': tags.append("MEDIA")
-                elif post['source'] == 'BlockTempo': tags.append("CRYPTO_NEWS")
-                elif post['source'] == 'CoinDesk': tags.append("GLOBAL")
-                else: tags.append("PTT_VET")
-                
                 full_text = (post['title'] + " " + post['content']).lower()
                 bullish_kws = ["新高", "突破", "買入", "大漲", "流入", "看多", "surge", "rally", "bull", "inflow", "record", "gain"]
                 bearish_kws = ["跌", "崩", "利空", "賣出", "流出", "看空", "plummet", "crash", "hack", "bear", "outflow", "drop", "loss"]
@@ -453,16 +450,9 @@ class SocialMediaEngine:
         top_kws = [k for k, v in sorted_keywords if v > 0][:3]
         kw_str = "、".join(top_kws) if top_kws else "總經數據"
 
-        if final_sentiment <= -20:
-            bearish_titles = [p['title'] for p in signals if p['sentiment'] == 'BEARISH']
-            reason = bearish_titles[0][:20] + "..." if bearish_titles else "多項空方指標匯聚"
-            sentiment_reason = f"📉 恐慌主因：系統偵測到「{reason}」，且市場對 {kw_str} 相關的避險情緒升溫，導致整體信心下滑。"
-        elif final_sentiment >= 20:
-            bullish_titles = [p['title'] for p in signals if p['sentiment'] == 'BULLISH']
-            reason = bullish_titles[0][:20] + "..." if bullish_titles else "多項多方指標匯聚"
-            sentiment_reason = f"🚀 貪婪主因：受到「{reason}」帶動，且社群對 {kw_str} 討論熱烈，判斷有資金流入跡象。"
-        else:
-            sentiment_reason = f"⚖️ 盤整觀望：目前多空訊號互相抵銷，市場主要聚焦於 {kw_str} 等話題，等待下一個明確的趨勢表態。"
+        if final_sentiment <= -20: sentiment_reason = f"📉 恐慌主因：市場對 {kw_str} 相關的避險情緒升溫，導致整體信心下滑。"
+        elif final_sentiment >= 20: sentiment_reason = f"🚀 貪婪主因：社群對 {kw_str} 討論熱烈，判斷有資金流入跡象。"
+        else: sentiment_reason = f"⚖️ 盤整觀望：目前多空訊號互相抵銷，市場主要聚焦於 {kw_str} 等話題。"
         
         return {
             "sentiment_score": int(final_sentiment), "signal_count": len(signals),
@@ -471,7 +461,7 @@ class SocialMediaEngine:
         }
 
 # ==========================================
-# 🚦 7. Routes (所有路由全數保留)
+# 🚦 7. Routes 
 # ==========================================
 @app.route('/')
 def index(): return render_template('index.html')
@@ -548,15 +538,20 @@ def get_coin_details(symbol):
 def live_data():
     crypto_list = DataManager.get_all_tickers()
     if not crypto_list: return jsonify({"timestamp": "--:--", "data": [], "exchange_rate": Config.DEFAULT_EXCHANGE_RATE})
+    
     top_symbols = [c['symbol'] for c in crypto_list]
     history_df = DataManager.get_historical_df_parallel(top_symbols)
     current_rate = DataManager.get_realtime_exchange_rate()
+    
     for coin in crypto_list:
         symbol = coin['symbol']
         price_usd = coin['price_usd']
-        if symbol == 'BTC': coin['risk'] = {"level": "base", "msg": "⚓ 市場基準", "corr": 1.0, "score": 0, "lambda": 0, "beta": 1, "stress": {"s10": price_usd * 0.9}}
-        else: coin['risk'] = RiskModel.calculate_copula_risk(symbol, history_df, coin.get('is_stable', False), price_usd)
+        if symbol == 'BTC': 
+            coin['risk'] = {"level": "base", "msg": "⚓ 市場基準", "corr": 1.0, "score": 0, "lambda": 0, "beta": 1, "stress": {"s10": price_usd * 0.9}}
+        else: 
+            coin['risk'] = RiskModel.calculate_copula_risk(symbol, history_df, coin.get('is_stable', False), price_usd)
         coin['price_twd'] = price_usd * current_rate
+        
     return jsonify({
         "timestamp": datetime.now().strftime("%H:%M:%S"),
         "data": crypto_list, 
@@ -565,4 +560,4 @@ def live_data():
     })
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    app.run(host='0.0.0.0', debug=True, port=5000)
