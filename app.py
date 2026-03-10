@@ -7,12 +7,13 @@ import time
 import requests
 import re 
 from difflib import SequenceMatcher
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List, Dict
 from functools import wraps
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from bs4 import BeautifulSoup
+import feedparser
 
 # ==========================================
 # 🔧 1. 系統配置
@@ -20,7 +21,7 @@ from bs4 import BeautifulSoup
 @dataclass
 class Config:
     DEFAULT_EXCHANGE_RATE: float = 32.5
-    CACHE_TTL: int = 60 # 快取 60 秒
+    CACHE_TTL: int = 60 
     
     COIN_META = {
         'BTC': {'cn_name': '比特幣'}, 'ETH': {'cn_name': '以太幣'}, 'BNB': {'cn_name': '幣安幣'},
@@ -31,16 +32,11 @@ class Config:
         'FDUSD': {'cn_name': 'FDUSD', 'is_stable': True},
         'USDT': {'cn_name': '泰達幣', 'is_stable': True}
     }
-    
     STABLE_COINS = {'USDC', 'FDUSD', 'USDT', 'DAI', 'TUSD', 'USDE'}
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 app = Flask(__name__)
 np.seterr(divide='ignore', invalid='ignore')
-
-# 🕒 台灣時間小幫手
-def get_tw_time():
-    return datetime.utcnow() + timedelta(hours=8)
 
 # ==========================================
 # 🧬 2. 快取裝飾器
@@ -72,21 +68,17 @@ class DataManager:
         try:
             tickers = DataManager.client.ticker_24hr()
             valid_tickers = []
-            
             for t in tickers:
                 symbol = t['symbol']
                 if symbol.endswith('USDT') and 'UP' not in symbol and 'DOWN' not in symbol:
-                    try:
-                        quote_vol = float(t['quoteVolume'])
-                        if quote_vol > 500000: # 過濾流動性差的幣
-                            valid_tickers.append({
-                                "symbol": symbol.replace('USDT', ''),
-                                "price_usd": float(t['lastPrice']),
-                                "change": float(t['priceChangePercent']),
-                                "vol": quote_vol
-                            })
-                    except: continue
-            
+                    quote_vol = float(t['quoteVolume'])
+                    if quote_vol > 500000: 
+                        valid_tickers.append({
+                            "symbol": symbol.replace('USDT', ''),
+                            "price_usd": float(t['lastPrice']),
+                            "change": float(t['priceChangePercent']),
+                            "vol": quote_vol
+                        })
             valid_tickers.sort(key=lambda x: x['vol'], reverse=True)
             
             final_list = []
@@ -100,13 +92,11 @@ class DataManager:
                 item['risk'] = {} 
                 final_list.append(item)
             return final_list
-        except:
-            return []
+        except: return []
 
     @staticmethod
     def get_kline_safe(symbol: str):
         try:
-            # 請求 120 小時的數據
             klines = DataManager.client.klines(symbol, "1h", limit=120)
             return symbol, [float(k[4]) for k in klines]
         except: return symbol, []
@@ -116,32 +106,60 @@ class DataManager:
     def get_historical_df_parallel(top_symbols: List[str]) -> pd.DataFrame:
         data_dict = {}
         target_pairs = [s + 'USDT' for s in (set(top_symbols) | set(Config.COIN_META.keys()) | {'BTC'})]
-        
-        # 維持 4 個執行緒以求穩定
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        with ThreadPoolExecutor(max_workers=20) as executor:
             future_to_symbol = {executor.submit(DataManager.get_kline_safe, pair): pair for pair in target_pairs}
             for future in as_completed(future_to_symbol):
                 try:
                     symbol, prices = future.result()
-                    if prices and len(prices) > 10: 
-                        data_dict[symbol.replace('USDT', '')] = prices
+                    if prices: data_dict[symbol.replace('USDT', '')] = prices
                 except: pass
-
         if 'BTC' not in data_dict: return pd.DataFrame()
-        
-        # 對齊數據長度
         min_len = min([len(v) for v in data_dict.values()])
         final_dict = {k: v[-min_len:] for k, v in data_dict.items()}
         return pd.DataFrame(final_dict)
 
     @staticmethod
     def get_realtime_exchange_rate() -> float:
-        try:
-            return float(requests.get("https://tw.rter.info/capi.php", timeout=1).json()["USDTWD"]["Exrate"])
+        try: return float(requests.get("https://tw.rter.info/capi.php", timeout=1).json()["USDTWD"]["Exrate"])
         except: return Config.DEFAULT_EXCHANGE_RATE
 
 # ==========================================
-# 🔮 4. 核心演算法 (Risk, MC, News)
+# 🤖 4. AI 翻譯官 (AIAssistant)
+# ==========================================
+class AIAssistant:
+    @staticmethod
+    def generate_sfi_insight(score: int) -> str:
+        if score >= 65:
+            return "🔴 <b>AI 警告：溫室裡的花朵！</b><br>它對大盤的抵抗力極差。只要老大哥（比特幣）稍微跌倒，它絕對會跟著大跳水！若市場氣氛不佳，千萬別買來避險。"
+        elif score >= 40:
+            return "🟡 <b>AI 判斷：正常的跟屁蟲。</b><br>表現中規中矩，大盤漲它就漲，大盤跌它就跌，沒有特別突出的避險防禦能力。"
+        else:
+            return "🟢 <b>AI 提示：獨立的孤狼！</b><br>它有自己的護城河，走勢跟大盤脫鉤。當市場恐慌大家逃命時，資金往往會躲進這種幣裡面避風頭。"
+
+    @staticmethod
+    def generate_copula_insight(corr: float, lambda_lower: float) -> str:
+        insight = ""
+        if corr >= 0.6: insight += "📈 <b>【連體嬰】</b>走勢幾乎一模一樣，買它等於買比特幣，無法分散風險。<br>"
+        elif corr <= 0.3: insight += "☁️ <b>【各自安好】</b>漲跌不看比特幣臉色，走勢隨機，適合用來分散資產風險。<br>"
+        else: insight += "🤝 <b>【普通朋友】</b>平常會跟隨大盤波動，但偶爾會走自己的路。<br>"
+
+        if lambda_lower >= 0.3: insight += "⚠️ <b>嚴重警告：</b>圖表左下角顯示，過去股災時它都是「手牽手一起跳崖」，絕對會被拖下水。"
+        elif lambda_lower <= 0.1: insight += "🛡️ <b>防禦屬性：</b>過去大崩盤時，它奇蹟似地沒有跟著摔下去，具備抗跌力。"
+        return insight
+
+    @staticmethod
+    def generate_mc_insight(current_price: float, mean_path_end: float, volatility: float) -> str:
+        if mean_path_end > current_price * 1.02: trend = "向上翹，代表大趨勢看漲 🚀"
+        elif mean_path_end < current_price * 0.98: trend = "往下垂，代表趨勢看跌 📉"
+        else: trend = "平緩，近期將處於盤整階段 ⚖️"
+            
+        if volatility > 3.0: vol_insight = "藍線散得極開，未來「不確定性極大」，可能暴賺也可能腰斬，心臟要大顆！ 🎢"
+        elif volatility < 1.0: vol_insight = "藍線緊緊擠在一起，代表未來幾天價格安定，適合想安穩睡覺的投資人。 🛌"
+        else: vol_insight = "藍線發散程度正常，屬於一般市場波動風險。"
+        return f"➖ <b>主力預測：</b>AI 綜合 100 種平行宇宙，預測黃線{trend}<br>📢 <b>風險判讀：</b>{vol_insight}"
+
+# ==========================================
+# 🔮 5. 核心演算法 (Risk, MC)
 # ==========================================
 class MonteCarloEngine:
     @staticmethod
@@ -151,7 +169,6 @@ class MonteCarloEngine:
             log_returns = np.log(np.array(prices[1:]) / np.array(prices[:-1]))
             drift = log_returns.mean() - (0.5 * log_returns.var())
             stdev = log_returns.std()
-            
             if np.isnan(stdev) or stdev == 0: return {}
             
             simulation_data = []
@@ -164,71 +181,46 @@ class MonteCarloEngine:
                 simulation_data.append(prices_path)
             
             final_prices = [p[-1] for p in simulation_data]
-            return {
-                "paths": simulation_data, 
-                "mean_path": np.mean(simulation_data, axis=0).tolist(), 
-                "var_95": np.percentile(final_prices, 5), 
-                "current_price": last_price, 
-                "volatility": stdev * 100
-            }
+            return {"paths": simulation_data, "mean_path": np.mean(simulation_data, axis=0).tolist(), "var_95": np.percentile(final_prices, 5), "current_price": last_price, "volatility": stdev * 100}
         except: return {}
 
 class RiskModel:
     @staticmethod
     def calculate_copula_risk(symbol: str, df: pd.DataFrame, is_stable: bool, current_price: float) -> Dict:
-        # 預設回傳
-        default_res = {"level": "base", "msg": "資料不足", "corr": 0, "score": 50, "lambda": 0, "beta": 0, "stress": {}}
-        
         try:
             if is_stable: return {"level": "safe", "msg": "穩定資產", "corr": 0.01, "score": 1, "lambda": 0, "beta": 0, "stress": {"s10": current_price}}
-            if symbol not in df.columns or 'BTC' not in df.columns: return default_res
+            if symbol not in df.columns or 'BTC' not in df.columns: return {"level": "base", "msg": "資料不足", "corr": 0, "score": 0, "lambda": 0, "beta": 0, "stress": {}}
             
             target_df = df[['BTC', symbol]].dropna()
             returns = target_df.pct_change().dropna()
-            
-            if len(target_df) < 10 or returns['BTC'].std() == 0: return default_res
+            if len(target_df) < 10 or returns['BTC'].std() == 0: return {"level": "base", "msg": "資料不足", "corr": 0, "score": 0, "lambda": 0, "beta": 0, "stress": {}}
 
-            # 🔥 關鍵修改：改成 'pearson'，不需要 scipy 套件也能跑！
-            corr = returns['BTC'].corr(returns[symbol], method='pearson')
-            
+            corr = returns['BTC'].corr(returns[symbol], method='spearman')
             u, v = returns['BTC'].rank(pct=True), returns[symbol].rank(pct=True)
-            
             crash_together = np.sum((u <= 0.2) & (v <= 0.2))
             crash_btc = np.sum(u <= 0.2)
             lambda_lower = 0 if crash_btc == 0 else crash_together / crash_btc
             
             btc_threshold = returns['BTC'].quantile(0.1) 
             tail_indices = returns['BTC'] <= btc_threshold
-            
             if tail_indices.sum() > 0:
                 avg_crash_coin = returns[symbol][tail_indices].mean()
                 avg_crash_btc = returns['BTC'][tail_indices].mean()
                 tail_beta = avg_crash_coin / avg_crash_btc if avg_crash_btc != 0 else 1.0
-            else:
-                tail_beta = 1.0
+            else: tail_beta = 1.0
             
-            if np.isnan(tail_beta) or np.isinf(tail_beta): tail_beta = 1.0
-            if np.isnan(lambda_lower): lambda_lower = 0.5
-            if np.isnan(corr): corr = 0.5
-
             tail_beta = float(np.clip(tail_beta, -2.0, 5.0))
             beta_factor = min(2.0, max(0.5, tail_beta))
             norm_beta = (beta_factor - 0.5) / 1.5
-            
             raw_score = (lambda_lower * 0.5 + (corr if corr>0 else 0)*0.2 + norm_beta * 0.3) * 100
             sfi_score = int(np.clip(raw_score, 0, 100))
-
             predicted_price = max(0, current_price * (1 + (-0.10 * tail_beta)))
             
             if sfi_score >= 65: level, msg = "danger", "🔥 高度脆弱"
             elif sfi_score >= 40: level, msg = "warning", "⚠️ 中度連動"
             else: level, msg = "safe", "🟢 走勢獨立"
-
             return {"level": level, "msg": msg, "corr": round(corr, 2), "lambda": round(lambda_lower, 2), "beta": round(tail_beta, 2), "score": sfi_score, "stress": {"s10": predicted_price}}
-        except Exception as e:
-            # 印出錯誤到後台，方便除錯
-            print(f"Error calculating risk for {symbol}: {e}")
-            return {"level": "warning", "msg": "暫無數據", "corr": 0.5, "score": 50, "lambda": 0, "beta": 1, "stress": {}}
+        except: return {"level": "base", "msg": "運算錯誤", "corr": 0, "score": 0, "lambda": 0, "beta": 0, "stress": {}}
 
 class NewsEngine:
     @staticmethod
@@ -237,16 +229,16 @@ class NewsEngine:
         top_movers = sorted([c for c in crypto_data if c.get('change') is not None], key=lambda x: abs(x['change']), reverse=True)[:3]
         for c in top_movers:
             t, s = (f"【AI看多】{c['symbol']} 突破阻力", "positive") if c['change']>5 else (f"【風險】{c['symbol']} 賣壓湧現", "negative") if c['change']<-5 else (f"【觀察】{c['symbol']} 盤整中", "neutral")
-            news_feed.append({"time": get_tw_time().strftime("%H:%M"), "title": t, "sentiment": s})
+            news_feed.append({"time": datetime.now().strftime("%H:%M"), "title": t, "sentiment": s})
         return news_feed
 
 # ==========================================
-# 📡 5. 社群媒體引擎
+# 📡 6. 社群媒體引擎 (V8: 全網監控)
 # ==========================================
 class SocialMediaEngine:
     FATAL_NOISE_KEYWORDS = ["閒聊", "好爽", "畢業", "塊陶", "公園", "薯條", "便當", "信仰", "崩盤", "丸子", "蒸的", "睡飽", "財富自由", "睏霸", "韭菜", "舒服", "下去", "這波", "笑死", "甚至", "乾爹", "崩", "噴", "接刀", "水桶", "公告", "版規", "協尋", "詐騙", "入群", "群組", "怎麼看", "大家", "覺得", "是否", "請問", "請益", "新手", "小白", "這隻", "推薦", "？", "?"]
     PREMIUM_KEYWORDS = ["貝萊德", "BlackRock", "富達", "Fidelity", "微策略", "MicroStrategy", "灰度", "Grayscale", "SEC", "聯準會", "Fed", "鮑爾", "Powell", "非農", "CPI", "PCE", "利率", "會議紀要", "幣安", "Coinbase", "Vitalik", "中本聰", "川普", "馬斯克", "Musk"]
-    SIGNAL_KEYWORDS = ["ETF", "升息", "降息", "通膨", "監管", "支撐", "壓力", "均線", "鯨魚", "鏈上", "TVL", "質押", "空投", "白皮書", "核准", "通過", "上市", "減半", "現貨", "合約", "回購", "增持", "銷毀", "新高"]
+    SIGNAL_KEYWORDS = ["ETF", "升息", "降息", "通膨", "監管", "支撐", "壓力", "均線", "鯨魚", "鏈上", "TVL", "質押", "空投", "白皮書", "核准", "通過", "上市", "減半", "現貨", "合約", "回購", "增持", "銷毀", "新高", "Approval", "Surge", "Bull", "Rally"]
     STRONG_HEADERS = ["[新聞]", "[情報]", "[翻譯]", "[數據]", "[分析]"]
     SOFT_NOISE_KEYWORDS = ["請問", "請益", "新手", "小白", "覺得", "是不是", "有沒有", "大家", "怎麼", "推薦", "感覺", "夢到"]
 
@@ -271,11 +263,19 @@ class SocialMediaEngine:
             if not title_div or not title_div.a: return None
             title = title_div.a.text.strip()
             link = "https://www.ptt.cc" + title_div.a["href"]
+            
             summary = ""
             if not any(kw in title for kw in SocialMediaEngine.FATAL_NOISE_KEYWORDS):
                 summary = SocialMediaEngine.get_content_summary(link)
+
             nrec = div.find("div", class_="nrec").text
-            push_count = 100 if nrec == "爆" else 0 if nrec.startswith("X") else int(nrec) if nrec.isdigit() else 0
+            push_count = 0
+            if nrec:
+                if nrec == "爆": push_count = 100
+                elif nrec.startswith("X"): push_count = 0
+                else: 
+                    try: push_count = int(nrec)
+                    except: push_count = 0
 
             return {
                 "source": "PTT", "title": title, "author": div.find("div", class_="author").text,
@@ -293,7 +293,7 @@ class SocialMediaEngine:
             soup = BeautifulSoup(res.text, "html.parser")
             divs = soup.find_all("div", class_="r-ent")[:20] 
             results = []
-            with ThreadPoolExecutor(max_workers=5) as executor:
+            with ThreadPoolExecutor(max_workers=10) as executor:
                 futures = [executor.submit(SocialMediaEngine.process_single_ptt_post, div) for div in divs]
                 for future in as_completed(futures):
                     res = future.result()
@@ -304,8 +304,7 @@ class SocialMediaEngine:
     @staticmethod
     def scrape_cnyes() -> List[Dict]:
         mock_news = [
-            {"source": "CNYES", "title": "比特幣現貨ETF淨流入創單日新高，機構資金湧入", "author": "鉅亨網", "date": get_tw_time().strftime("%m/%d"), "push": 99, "link": "#", "content": "市場數據顯示..."},
-            {"source": "CNYES", "title": "貝萊德 CEO 重申：加密貨幣將成為數位黃金", "author": "鉅亨網", "date": get_tw_time().strftime("%m/%d"), "push": 88, "link": "#", "content": "Larry Fink 在訪談中..."}
+            {"source": "CNYES", "title": "比特幣現貨ETF淨流入創單日新高，機構資金湧入", "author": "鉅亨網", "date": datetime.now().strftime("%m/%d"), "push": 99, "link": "#", "content": "市場數據顯示..."}
         ]
         url = "https://news.cnyes.com/news/cat/bc" 
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -322,9 +321,9 @@ class SocialMediaEngine:
                 if "/news/id/" in href and len(title) > 15:
                     posts.append({
                         "source": "CNYES", "title": title, "author": "鉅亨網",
-                        "date": get_tw_time().strftime("%m/%d"), "push": 80,
+                        "date": datetime.now().strftime("%m/%d"), "push": 80,
                         "link": "https://news.cnyes.com" + href if not href.startswith("http") else href,
-                        "content": "鉅亨網區塊鏈新聞快訊 (Verified)"
+                        "content": "鉅亨網區塊鏈新聞快訊"
                     })
                     count += 1
                     if count >= 6: break
@@ -334,7 +333,7 @@ class SocialMediaEngine:
     @staticmethod
     def scrape_blocktempo() -> List[Dict]:
         mock_news = [
-            {"source": "BlockTempo", "title": "以太坊坎昆升級倒數，Layer 2 幣種全面噴發", "author": "動區", "date": get_tw_time().strftime("%m/%d"), "push": 95, "link": "#", "content": "開發者確認進度順利..."},
+            {"source": "BlockTempo", "title": "以太坊升級倒數，Layer 2 幣種全面噴發", "author": "動區", "date": datetime.now().strftime("%m/%d"), "push": 95, "link": "#", "content": "開發者確認進度..."}
         ]
         url = "https://www.blocktempo.com/category/cryptocurrency-market/"
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -349,15 +348,36 @@ class SocialMediaEngine:
                 if a_tag:
                     posts.append({
                         "source": "BlockTempo", "title": a_tag.get_text().strip(), "author": "動區",
-                        "date": get_tw_time().strftime("%m/%d"), "push": 90,
-                        "link": a_tag['href'], "content": "動區動趨深度報導 (Verified)"
+                        "date": datetime.now().strftime("%m/%d"), "push": 90,
+                        "link": a_tag['href'], "content": "動區深度報導"
                     })
             return posts if posts else mock_news
         except: return mock_news
 
     @staticmethod
+    def scrape_coindesk() -> List[Dict]:
+        mock_news = [
+            {"source": "CoinDesk", "title": "Bitcoin ETF Sees Record Inflows", "author": "CoinDesk", "date": datetime.now().strftime("%m/%d"), "push": 99, "link": "#", "content": "Global markets react to new SEC approvals..."}
+        ]
+        posts = []
+        try:
+            feed = feedparser.parse('https://www.coindesk.com/arc/outboundfeeds/rss/')
+            for entry in feed.entries[:6]:
+                posts.append({
+                    "source": "CoinDesk", 
+                    "title": entry.title, 
+                    "author": "CoinDesk",
+                    "date": datetime.now().strftime("%m/%d"), 
+                    "push": 85,
+                    "link": entry.link, 
+                    "content": entry.summary[:80] + "..." if 'summary' in entry else "CoinDesk Global News"
+                })
+            return posts if posts else mock_news
+        except: return mock_news
+
+    @staticmethod
     def calc_quality_score(post: Dict) -> int:
-        if post.get('source') in ['CNYES', 'BlockTempo']: return 80 + (len(post['title']) % 15)
+        if post.get('source') in ['CNYES', 'BlockTempo', 'CoinDesk']: return 80 + (len(post['title']) % 15)
         score = 0
         title = post['title']
         content = post['content']
@@ -392,50 +412,66 @@ class SocialMediaEngine:
         THRESHOLD = 25 if high_quality_count >= 3 else 0 
         
         for post in scored_posts:
-            is_media = post['source'] in ['CNYES', 'BlockTempo']
+            is_media = post['source'] in ['CNYES', 'BlockTempo', 'CoinDesk']
+            
             if is_media or post['quality_score'] >= THRESHOLD:
                 post['type'] = 'signal'
                 tags = []
                 if post['source'] == 'CNYES': tags.append("MEDIA")
                 elif post['source'] == 'BlockTempo': tags.append("CRYPTO_NEWS")
+                elif post['source'] == 'CoinDesk': tags.append("GLOBAL")
                 else: tags.append("PTT_VET")
                 
-                if "BTC" in post['title'].upper(): tags.append("BTC")
-                if "ETH" in post['title'].upper(): tags.append("ETH")
-                post['tags'] = tags
+                full_text = (post['title'] + " " + post['content']).lower()
+                bullish_kws = ["新高", "突破", "買入", "大漲", "流入", "看多", "surge", "rally", "bull", "inflow", "record", "gain"]
+                bearish_kws = ["跌", "崩", "利空", "賣出", "流出", "看空", "plummet", "crash", "hack", "bear", "outflow", "drop", "loss"]
                 
-                if any(kw in post['title'] for kw in ["新高", "突破", "買入", "大漲", "流入"]):
+                if any(kw in full_text for kw in bullish_kws):
                     post['sentiment'] = "BULLISH"
                     post['ai_summary'] = "AI 識別為高價值利多訊號，建議關注。"
                     sentiment_score += 5
-                elif any(kw in post['title'] for kw in ["跌", "崩", "利空", "賣出", "流出"]):
+                elif any(kw in full_text for kw in bearish_kws):
                     post['sentiment'] = "BEARISH"
                     post['ai_summary'] = "AI 識別為潛在風險，建議避險。"
                     sentiment_score -= 5
                 else:
                     post['sentiment'] = "NEUTRAL"
                     post['ai_summary'] = f"市場關鍵情報：{post['content'][:20]}..."
+                
                 signals.append(post)
             else:
                 post['type'] = 'noise'
                 post['sentiment'] = "NEUTRAL"
                 post['ai_summary'] = "低資訊密度"
                 noises.append(post)
-                if "爽" in post['title']: sentiment_score += 0.5
-                if "崩" in post['title']: sentiment_score -= 0.5
 
         signals.sort(key=lambda x: x['quality_score'], reverse=True)
         final_sentiment = max(-100, min(100, sentiment_score * 10))
         sorted_keywords = sorted(keyword_counts.items(), key=lambda x: x[1], reverse=True)
         
+        sentiment_reason = ""
+        top_kws = [k for k, v in sorted_keywords if v > 0][:3]
+        kw_str = "、".join(top_kws) if top_kws else "總經數據"
+
+        if final_sentiment <= -20:
+            bearish_titles = [p['title'] for p in signals if p['sentiment'] == 'BEARISH']
+            reason = bearish_titles[0][:20] + "..." if bearish_titles else "多項空方指標匯聚"
+            sentiment_reason = f"📉 恐慌主因：系統偵測到「{reason}」，且市場對 {kw_str} 相關的避險情緒升溫，導致整體信心下滑。"
+        elif final_sentiment >= 20:
+            bullish_titles = [p['title'] for p in signals if p['sentiment'] == 'BULLISH']
+            reason = bullish_titles[0][:20] + "..." if bullish_titles else "多項多方指標匯聚"
+            sentiment_reason = f"🚀 貪婪主因：受到「{reason}」帶動，且社群對 {kw_str} 討論熱烈，判斷有資金流入跡象。"
+        else:
+            sentiment_reason = f"⚖️ 盤整觀望：目前多空訊號互相抵銷，市場主要聚焦於 {kw_str} 等話題，等待下一個明確的趨勢表態。"
+        
         return {
             "sentiment_score": int(final_sentiment), "signal_count": len(signals),
             "noise_count": len(noises), "hot_keywords": sorted_keywords,
-            "signals": signals, "noises": noises
+            "signals": signals, "noises": noises, "sentiment_reason": sentiment_reason
         }
 
 # ==========================================
-# 🚦 6. Routes
+# 🚦 7. Routes (所有路由全數保留)
 # ==========================================
 @app.route('/')
 def index(): return render_template('index.html')
@@ -450,23 +486,28 @@ def monte_carlo_info(): return render_template('monte_carlo_info.html')
 def social_sentiment_page(): return render_template('social_sentiment.html')
 
 @app.route('/api/social-data')
-@ttl_cache(ttl_seconds=60)
+@ttl_cache(ttl_seconds=60) 
 def get_social_data():
     all_posts = []
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    with ThreadPoolExecutor(max_workers=4) as executor:
         f1 = executor.submit(SocialMediaEngine.scrape_ptt)
         f2 = executor.submit(SocialMediaEngine.scrape_cnyes)
         f3 = executor.submit(SocialMediaEngine.scrape_blocktempo)
+        f4 = executor.submit(SocialMediaEngine.scrape_coindesk)
         try: all_posts.extend(f1.result())
         except: pass
         try: all_posts.extend(f2.result())
         except: pass
         try: all_posts.extend(f3.result())
         except: pass
+        try: all_posts.extend(f4.result())
+        except: pass
 
     if not all_posts:
-        return jsonify({"sentiment_score": 0, "signal_count": 0, "noise_count": 0, "hot_keywords": [], "signals": [], "noises": []})
-    
+        return jsonify({
+            "sentiment_score": 0, "signal_count": 0, "noise_count": 0, 
+            "hot_keywords": [], "signals": [], "noises": [], "sentiment_reason": "查無資料"
+        })
     return jsonify(SocialMediaEngine.analyze_posts(all_posts))
 
 @app.route('/api/details/<symbol>')
@@ -478,11 +519,27 @@ def get_coin_details(symbol):
         min_len = min(len(prices), len(btc_prices))
         df = pd.DataFrame({'BTC': btc_prices[-min_len:], symbol: prices[-min_len:]})
         returns = df.pct_change().dropna()
+        
+        is_stable = symbol in Config.STABLE_COINS
+        risk_data = RiskModel.calculate_copula_risk(symbol, df, is_stable, prices[-1])
+        sim_data = MonteCarloEngine.simulate_price_paths(prices[-30:])
+        
+        ai_sfi_text = AIAssistant.generate_sfi_insight(risk_data.get('score', 0))
+        ai_copula_text = AIAssistant.generate_copula_insight(risk_data.get('corr', 0), risk_data.get('lambda', 0))
+        mean_path_end = sim_data.get('mean_path', [0])[-1] if sim_data and 'mean_path' in sim_data else prices[-1]
+        ai_mc_text = AIAssistant.generate_mc_insight(prices[-1], mean_path_end, sim_data.get('volatility', 0) if sim_data else 0)
+
         return jsonify({
             "btc_returns": [0 if np.isnan(x) else x for x in returns['BTC'].tolist()],
             "coin_returns": [0 if np.isnan(x) else x for x in returns[symbol].tolist()],
             "dates": list(range(len(returns))),
-            "simulation": MonteCarloEngine.simulate_price_paths(prices[-30:])
+            "simulation": sim_data,
+            "risk_data": risk_data, 
+            "ai_insights": {
+                "sfi": ai_sfi_text,
+                "copula": ai_copula_text,
+                "mc": ai_mc_text
+            }
         })
     except Exception as e: return jsonify({"error": str(e)})
 
@@ -497,13 +554,11 @@ def live_data():
     for coin in crypto_list:
         symbol = coin['symbol']
         price_usd = coin['price_usd']
-        if symbol == 'BTC': 
-            coin['risk'] = {"level": "base", "msg": "⚓ 市場基準", "corr": 1.0, "score": 0, "lambda": 0, "beta": 1, "stress": {"s10": price_usd * 0.9}}
-        else: 
-            coin['risk'] = RiskModel.calculate_copula_risk(symbol, history_df, coin.get('is_stable', False), price_usd)
+        if symbol == 'BTC': coin['risk'] = {"level": "base", "msg": "⚓ 市場基準", "corr": 1.0, "score": 0, "lambda": 0, "beta": 1, "stress": {"s10": price_usd * 0.9}}
+        else: coin['risk'] = RiskModel.calculate_copula_risk(symbol, history_df, coin.get('is_stable', False), price_usd)
         coin['price_twd'] = price_usd * current_rate
     return jsonify({
-        "timestamp": get_tw_time().strftime("%H:%M:%S"),
+        "timestamp": datetime.now().strftime("%H:%M:%S"),
         "data": crypto_list, 
         "exchange_rate": current_rate,
         "news": NewsEngine.generate_sentiment_news(crypto_list)
