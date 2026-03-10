@@ -1,5 +1,4 @@
 from flask import Flask, render_template, jsonify, request
-from binance.spot import Spot
 import pandas as pd
 import numpy as np
 import logging
@@ -57,15 +56,16 @@ def ttl_cache(ttl_seconds: int):
     return decorator
 
 # ==========================================
-# 🌐 3. 資料管理 (Binance)
+# 🌐 3. 資料管理 (直接抓取原始 API，不佔用連線池)
 # ==========================================
 class DataManager:
-    client = Spot() 
 
     @staticmethod
     def get_all_tickers() -> List[Dict]:
         try:
-            tickers = DataManager.client.ticker_24hr()
+            # 🚀 直接要資料，不透過官方套件，絕不塞車
+            res = requests.get("https://api.binance.com/api/v3/ticker/24hr", timeout=5)
+            tickers = res.json()
             valid_tickers = []
             for t in tickers:
                 symbol = t['symbol']
@@ -92,14 +92,19 @@ class DataManager:
                 final_list.append(item)
             return final_list
         except Exception as e: 
-            print(f"⚠️ 幣安 API 抓取失敗，原因: {e}")
+            print(f"⚠️ 幣安大盤 API 抓取失敗: {e}")
             return []
 
     @staticmethod
     def get_kline_safe(symbol: str):
         try:
-            klines = DataManager.client.klines(symbol, "1h", limit=120)
-            return symbol, [float(k[4]) for k in klines]
+            # 🚀 自己拼網址抓 K 線，抓完就跑！
+            url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=120"
+            res = requests.get(url, timeout=3)
+            if res.status_code == 200:
+                data = res.json()
+                return symbol, [float(k[4]) for k in data]
+            return symbol, []
         except Exception as e:
             print(f"⚠️ K線抓取失敗 {symbol}: {e}")
             return symbol, []
@@ -108,18 +113,18 @@ class DataManager:
     @ttl_cache(ttl_seconds=300) 
     def get_historical_df_parallel(top_symbols: List[str]) -> pd.DataFrame:
         data_dict = {}
-        # 🔥 降壓秘訣 1：只抓前 10 名的熱門幣，保護免費主機
+        # 🔥 降壓秘訣：只抓前 10 名的熱門幣，保護免費主機
         target_pairs = [s + 'USDT' for s in top_symbols[:10]]
         if 'BTCUSDT' not in target_pairs:
             target_pairs.append('BTCUSDT')
             
-        # 🔥 降壓秘訣 2：乖乖排隊抓資料，絕不塞爆連線池
+        # 🔥 降壓秘訣：乖乖排隊抓資料
         for pair in target_pairs:
             try:
                 symbol, prices = DataManager.get_kline_safe(pair)
                 if prices: 
                     data_dict[symbol.replace('USDT', '')] = prices
-                time.sleep(0.1) # 稍微休息 0.1 秒
+                time.sleep(0.1) 
             except: 
                 pass
 
@@ -205,7 +210,7 @@ class RiskModel:
             returns = target_df.pct_change().dropna()
             if len(target_df) < 10 or returns['BTC'].std() == 0: return {"level": "base", "msg": "資料不足", "corr": 0, "score": 0, "lambda": 0, "beta": 0, "stress": {}}
 
-            # 🔥 終極解藥：移除會讓主機崩潰的 spearman 套件要求，改用原生基礎演算法
+            # 🔥 移除 spearman，改用內建安全公式防崩潰
             corr = returns['BTC'].corr(returns[symbol])
             
             u, v = returns['BTC'].rank(pct=True), returns[symbol].rank(pct=True)
