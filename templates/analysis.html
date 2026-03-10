@@ -2,95 +2,141 @@
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0"> 
-    <title>ZenInvest 監控系統</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ symbol }} 深度量化分析</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
-        body { background-color: #0a1929; color: #e0e6ed; font-family: 'Segoe UI', Roboto, sans-serif; overflow: hidden; }
-        @media (max-width: 768px) { body { overflow: auto; height: auto; } }
-        .table { color: #e0e6ed; border-color: #1e3a5f; margin-bottom: 0; }
-        .table thead th { position: sticky; top: 0; z-index: 10; background-color: #0d2339; border-bottom: 2px solid #3e6b99; color: #94a3b8; font-weight: 700; padding: 18px 12px; }
-        .table tbody td { padding: 15px 12px; vertical-align: middle; }
-        .table-hover tbody tr:hover { color: #fff; background-color: #132f4c; }
-        .up { color: #4ade80; font-weight: bold; }
-        .down { color: #fb7185; font-weight: bold; }
-        .crypto-name { font-size: 1.3rem; font-weight: bold; color: #fff; }
-        .btn-currency { background-color: #0d2339; color: #94a3b8; border: 1px solid #3e6b99; }
-        .btn-currency.active { background-color: #38bdf8; color: #0a1929; border-color: #38bdf8; font-weight: bold; }
-        .risk-spectrum-container { width: 140px; height: 8px; background: #1e293b; border-radius: 4px; position: relative; margin-top: 5px; }
-        .risk-gradient { width: 100%; height: 100%; background: linear-gradient(90deg, #4ade80 0%, #facc15 50%, #fb7185 100%); border-radius: 4px; opacity: 0.8; }
-        .risk-pointer { width: 6px; height: 12px; background: #fff; position: absolute; top: -2px; transform: translateX(-50%); border-radius: 2px; }
-        .btn-analyze { border: 1px solid #3e6b99; color: #94a3b8; padding: 2px 10px; border-radius: 15px; text-decoration: none; }
-        .btn-analyze:hover { background: #38bdf8; color: #000; }
+        body { background-color: #050b14; color: #e0e6ed; font-family: 'Segoe UI', sans-serif; }
+        .glass-card { background: rgba(16, 33, 65, 0.6); border: 1px solid rgba(56, 189, 248, 0.2); backdrop-filter: blur(12px); border-radius: 12px; margin-bottom: 20px; }
+        .card-header { background: rgba(13, 35, 57, 0.8); border-bottom: 1px solid rgba(56, 189, 248, 0.2); font-weight: bold; padding: 12px 20px; border-radius: 12px 12px 0 0;}
+        .ai-insight-box { margin-top: 15px; padding: 15px; border-radius: 8px; font-size: 0.95rem; line-height: 1.6; }
+        .btn-back { border: 1px solid #38bdf8; color: #38bdf8; text-decoration: none; padding: 6px 20px; border-radius: 20px; transition: 0.3s;}
+        .btn-back:hover { background: #38bdf8; color: #050b14; }
+        .chart-container { height: 350px; width: 100%; }
     </style>
 </head>
 <body>
-    <div class="container-fluid py-4" style="max-width: 96%; height: 100vh; display: flex; flex-direction: column;">
-        <div class="d-flex justify-content-between align-items-end mb-3">
-            <div><h2 class="fw-bold mb-0 text-white">💎 ZenInvest 監控系統</h2></div>
-            <div class="text-end">
-                <div class="btn-group mb-2">
-                    <button type="button" class="btn btn-currency active" id="btn-twd" onclick="setCurrency('TWD')">TWD</button>
-                    <button type="button" class="btn btn-currency" id="btn-usd" onclick="setCurrency('USD')">USD</button>
-                </div>
-                <div class="d-flex align-items-center justify-content-end gap-3">
-                    <span id="update-time" class="fs-4 fw-bold text-white">--:--:--</span>
-                    <button id="refresh-btn" class="btn btn-outline-info fw-bold" onclick="manualRefresh()">🔄 更新</button>
-                </div>
-            </div>
+    <div class="container-fluid py-4">
+        <div class="d-flex justify-content-between align-items-center mb-4 px-2">
+            <h2 class="fw-bold text-white"><i class="fas fa-chart-line text-info"></i> {{ symbol }} 量化戰情分析</h2>
+            <a href="/" class="btn btn-back"><i class="fas fa-arrow-left"></i> 返回大盤</a>
         </div>
 
-        <div class="d-flex gap-2 mb-3">
-            <input type="text" id="search-input" class="form-control bg-dark text-white border-secondary" placeholder="🔍 搜尋資產..." style="max-width: 300px;">
-            <a href="/social-sentiment" class="btn btn-outline-info">📡 訊噪分離器</a>
-        </div>
-        
-        <div class="table-responsive rounded shadow-lg mb-3 flex-grow-1" style="background-color: #0d2339;">
-            <table class="table table-hover align-middle mb-0">
-                <thead>
-                    <tr><th class="text-center">排名</th><th>資產名稱</th><th>即時價格 (<span id="price-header">TWD</span>)</th><th>24H 漲跌幅</th><th>風險指數 (SFI)</th></tr>
-                </thead>
-                <tbody id="crypto-body"></tbody>
-            </table>
+        <div class="row g-4">
+            <div class="col-md-4">
+                <div class="glass-card h-100 d-flex flex-column">
+                    <div class="card-header text-danger"><i class="fas fa-rocket"></i> SFI 系統性脆弱指數</div>
+                    <div class="card-body d-flex flex-column">
+                        <div id="sfi-gauge" class="chart-container" style="height: 250px;"></div>
+                        <div id="ai-sfi-insight" class="ai-insight-box text-white mt-auto" style="background: rgba(251, 113, 133, 0.1); border-left: 4px solid #fb7185;">
+                            <i class="fas fa-spinner fa-spin"></i> 載入 AI 解讀中...
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-md-4">
+                <div class="glass-card h-100 d-flex flex-column">
+                    <div class="card-header text-info"><i class="fas fa-project-diagram"></i> 歷史回測：Copula 相關性</div>
+                    <div class="card-body d-flex flex-column">
+                        <div id="copula-scatter" class="chart-container"></div>
+                        <div id="ai-copula-insight" class="ai-insight-box text-white mt-auto" style="background: rgba(56, 189, 248, 0.1); border-left: 4px solid #38bdf8;">
+                            <i class="fas fa-spinner fa-spin"></i> 載入 AI 解讀中...
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-md-4">
+                <div class="glass-card h-100 d-flex flex-column">
+                    <div class="card-header text-warning"><i class="fas fa-crystal-ball"></i> 未來預測：蒙地卡羅</div>
+                    <div class="card-body d-flex flex-column">
+                        <div id="mc-line" class="chart-container"></div>
+                        <div id="ai-mc-insight" class="ai-insight-box text-white mt-auto" style="background: rgba(250, 204, 21, 0.1); border-left: 4px solid #facc15;">
+                            <i class="fas fa-spinner fa-spin"></i> 載入 AI 解讀中...
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
     <script>
-        let allCryptoData = [], currentCurrency = 'TWD';
-        document.getElementById('search-input').addEventListener('input', renderTable);
-        function setCurrency(curr) { currentCurrency = curr; document.getElementById('price-header').innerText = curr; document.querySelectorAll('.btn-currency').forEach(btn => btn.classList.remove('active')); if(curr === 'TWD') document.getElementById('btn-twd').classList.add('active'); else document.getElementById('btn-usd').classList.add('active'); renderTable(); }
-        async function fetchData() {
-            try {
-                const response = await fetch('/api/coingecko');
-                const result = await response.json();
-                document.getElementById('update-time').innerText = result.timestamp;
-                if (!result.data) return;
-                allCryptoData = result.data;
-                renderTable();
-            } catch (error) { console.error(error); }
-        }
-        function renderTable() {
-            const tbody = document.getElementById('crypto-body'); tbody.innerHTML = ''; 
-            const searchText = document.getElementById('search-input').value.toLowerCase().trim();
-            const filteredData = allCryptoData.filter(c => c.name.toLowerCase().includes(searchText) || c.cn_name.toLowerCase().includes(searchText)).slice(0, 50);
-            filteredData.forEach(coin => {
-                let changeColor = coin.change >= 0 ? 'up' : 'down';
-                let riskDisplay = '';
-                if (coin.risk && coin.risk.score !== undefined) {
-                    let score = coin.risk.score;
-                    let msg = coin.risk.msg;
-                    let scoreColor = score > 65 ? '#fb7185' : (score > 40 ? '#facc15' : '#4ade80');
-                    let params = `name=${encodeURIComponent(coin.cn_name)}&corr=${coin.risk.corr}&score=${score}&beta=${coin.risk.beta}&lambda=${coin.risk.lambda}&level=${coin.risk.level}`;
-                    riskDisplay = `<div class="d-flex align-items-center"><div><div class="d-flex justify-content-between mb-1" style="width: 140px;"><span style="font-size: 0.9rem; font-weight: bold; color: ${scoreColor};">${msg}</span><span style="font-size: 0.8rem; color: #64748b;">${score}/100</span></div><div class="risk-spectrum-container"><div class="risk-gradient"></div><div class="risk-pointer" style="left: ${score}%;"></div></div></div>${coin.symbol !== 'BTC' ? `<a href="/analysis/${coin.symbol}?${params}" class="btn-analyze ms-2">📊 分析</a>` : ''}</div>`;
+        const symbol = "{{ symbol }}";
+        const layoutConfig = {
+            paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
+            font: { color: '#e0e6ed' },
+            margin: { t: 30, b: 40, l: 40, r: 20 },
+            xaxis: { gridcolor: '#1e3a5f', zerolinecolor: '#38bdf8' },
+            yaxis: { gridcolor: '#1e3a5f', zerolinecolor: '#38bdf8' }
+        };
+
+        fetch(`/api/details/${symbol}`)
+            .then(res => res.json())
+            .then(data => {
+                if (data.error) {
+                    alert("無法獲取資料：" + data.error);
+                    return;
                 }
-                let price = currentCurrency === 'TWD' ? coin.price_twd : coin.price_usd;
-                let symbol = currentCurrency === 'TWD' ? 'NT$' : '$';
-                tbody.innerHTML += `<tr class="update-flash"><td class="text-center text-muted fw-bold">${coin.rank}</td><td><div><div class="crypto-name">${coin.cn_name}</div><div class="crypto-symbol">${coin.symbol}</div></div></td><td class="fw-bold fs-5 text-white">${symbol} ${price.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 4})}</td><td class="${changeColor}">${coin.change ? coin.change.toFixed(2) : '0.00'}%</td><td>${riskDisplay}</td></tr>`;
-            });
-        }
-        setInterval(fetchData, 60000); async function manualRefresh() { await fetchData(); } fetchData(); 
+
+                // 1. 繪製 SFI 儀表板
+                let sfiScore = data.risk_data ? data.risk_data.score : 0;
+                let gaugeColor = sfiScore >= 65 ? '#fb7185' : (sfiScore >= 40 ? '#facc15' : '#34d399');
+                Plotly.newPlot('sfi-gauge', [{
+                    type: "indicator", mode: "gauge+number", value: sfiScore,
+                    title: { text: "SFI Score", font: { size: 18 } },
+                    gauge: {
+                        axis: { range: [null, 100], tickwidth: 1, tickcolor: "#e0e6ed" },
+                        bar: { color: gaugeColor },
+                        bgcolor: "rgba(255,255,255,0.05)",
+                        borderwidth: 0,
+                        steps: [
+                            { range: [0, 39], color: "rgba(52, 211, 153, 0.2)" },
+                            { range: [40, 64], color: "rgba(250, 204, 21, 0.2)" },
+                            { range: [65, 100], color: "rgba(251, 113, 133, 0.2)" }
+                        ]
+                    }
+                }], { ...layoutConfig, margin: { t: 40, b: 10, l: 30, r: 30 } }, {displayModeBar: false});
+
+                // 2. 繪製 Copula 散佈圖
+                Plotly.newPlot('copula-scatter', [{
+                    x: data.btc_returns, y: data.coin_returns,
+                    mode: 'markers', type: 'scatter',
+                    marker: { color: '#38bdf8', size: 8, opacity: 0.7 }
+                }], { 
+                    ...layoutConfig, 
+                    xaxis: { ...layoutConfig.xaxis, title: 'BTC Returns' },
+                    yaxis: { ...layoutConfig.yaxis, title: `${symbol} Returns` }
+                }, {displayModeBar: false});
+
+                // 3. 繪製蒙地卡羅線條圖
+                if (data.simulation && data.simulation.paths) {
+                    let mcTraces = data.simulation.paths.map(path => ({
+                        y: path, type: 'scatter', mode: 'lines',
+                        line: { color: 'rgba(56, 189, 248, 0.1)', width: 1 },
+                        showlegend: false, hoverinfo: 'skip'
+                    }));
+                    mcTraces.push({
+                        y: data.simulation.mean_path, type: 'scatter', mode: 'lines',
+                        name: '預測均值', line: { color: '#facc15', width: 3 }, hoverinfo: 'y'
+                    });
+                    Plotly.newPlot('mc-line', mcTraces, { 
+                        ...layoutConfig,
+                        xaxis: { ...layoutConfig.xaxis, title: 'Future Days' },
+                        yaxis: { ...layoutConfig.yaxis, title: 'Price' }
+                    }, {displayModeBar: false});
+                }
+
+                // 🤖 4. 將 AI 翻譯官的解讀寫入 HTML 框框中
+                if (data.ai_insights) {
+                    document.getElementById('ai-sfi-insight').innerHTML = data.ai_insights.sfi;
+                    document.getElementById('ai-copula-insight').innerHTML = data.ai_insights.copula;
+                    document.getElementById('ai-mc-insight').innerHTML = data.ai_insights.mc;
+                }
+            })
+            .catch(err => console.error(err));
     </script>
 </body>
 </html>
