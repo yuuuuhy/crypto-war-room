@@ -6,3 +6,4 @@ beautifulsoup4
 binance-connector
 plotly
 gunicorn
+feedparser
