@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0"> 
     <title>全網社群訊噪分離</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
         body { background-color: #050b14; color: #e0e6ed; font-family: 'Segoe UI', Roboto, sans-serif; }
@@ -14,10 +13,7 @@
         .post-card { background: rgba(255, 255, 255, 0.03); border-bottom: 1px solid rgba(255, 255, 255, 0.05); padding: 15px; margin-bottom: 10px; border-radius: 6px; }
         .signal-post { border-left: 4px solid #4ade80; background: rgba(16, 33, 65, 0.4); }
         .noise-post { border-left: 4px solid #64748b; opacity: 0.5; filter: grayscale(0.8); }
-        .keyword-badge { border: 1px solid rgba(255,255,255,0.2); padding: 5px 10px; border-radius: 20px; background: rgba(0,0,0,0.3); display: inline-block; margin: 3px; font-size: 1rem; transition: 0.3s; }
-        .keyword-badge:hover { background: rgba(56, 189, 248, 0.2); transform: scale(1.05); }
-        .hot-keyword { border-color: #facc15; color: #facc15; }
-        .stat-val { font-size: 3rem; font-weight: bold; }
+        .stat-val { font-size: 4rem; font-weight: bold; line-height: 1; }
         .btn-back { border: 1px solid #38bdf8; color: #38bdf8; text-decoration: none; padding: 5px 15px; border-radius: 20px; }
         .post-link { color: white; text-decoration: none; font-weight: 500; transition: 0.2s; display: block; }
         .post-link:hover { color: #38bdf8; text-decoration: underline; }
@@ -30,24 +26,16 @@
             <a href="/" class="btn btn-back">返回</a>
         </div>
 
-        <div class="row g-4 mb-4">
-            <div class="col-md-3">
-                <div class="glass-card h-100 p-4 text-center d-flex flex-column justify-content-center">
-                    <div class="text-muted mb-2">AI 輿情情緒</div>
-                    <div class="stat-val" id="sentiment-score">--</div>
-                    <div id="sentiment-status" class="mt-2 fs-5 badge bg-dark border border-secondary">載入中...</div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="glass-card h-100">
-                    <div class="card-header">📈 趨勢 (Live)</div>
-                    <div class="card-body p-2"><div id="trend-chart" style="height: 150px;"></div></div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="glass-card h-100">
-                    <div class="card-header">🔥 熱門話題</div>
-                    <div class="card-body" id="keyword-cloud"></div>
+        <div class="row mb-4">
+            <div class="col-12">
+                <div class="glass-card p-4 text-center">
+                    <div class="text-muted mb-2 fs-5">市場整體 AI 輿情情緒分數</div>
+                    <div class="stat-val my-2" id="sentiment-score">--</div>
+                    <div id="sentiment-status" class="mt-2 fs-4 badge bg-dark border border-secondary px-4 py-2 mb-3">載入中...</div>
+                    
+                    <div id="sentiment-reason" class="text-warning mt-2" style="font-size: 1.15rem; max-width: 800px; margin: 0 auto; letter-spacing: 1px;">
+                        正在彙整全球市場情報...
+                    </div>
                 </div>
             </div>
         </div>
@@ -69,10 +57,6 @@
     </div>
 
     <script>
-        let timeData = [], sentimentData = [];
-        Plotly.newPlot('trend-chart', [{ x: timeData, y: sentimentData, mode: 'lines', line: {color: '#38bdf8', width: 3} }], 
-        { paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)', margin: { t: 10, b: 30, l: 30, r: 10 }, xaxis: { showgrid: false }, yaxis: { gridcolor: '#1e3a5f', range: [-100, 100] } }, {displayModeBar: false});
-
         async function fetchSocialData() {
             try {
                 const response = await fetch('/api/social-data');
@@ -85,28 +69,21 @@
                 scoreEl.innerText = data.sentiment_score;
                 const statusEl = document.getElementById('sentiment-status');
                 
+                // 更新情緒狀態
                 if(data.sentiment_score > 20) { 
-                    scoreEl.style.color = '#4ade80'; statusEl.innerText = "貪婪 (Greed)"; statusEl.className = "mt-2 fs-5 badge bg-success"; 
+                    scoreEl.style.color = '#4ade80'; statusEl.innerText = "貪婪 (Greed)"; statusEl.className = "mt-2 fs-4 badge bg-success px-4 py-2 mb-3"; 
                 } else if(data.sentiment_score < -20) { 
-                    scoreEl.style.color = '#fb7185'; statusEl.innerText = "恐慌 (Fear)"; statusEl.className = "mt-2 fs-5 badge bg-danger"; 
+                    scoreEl.style.color = '#fb7185'; statusEl.innerText = "恐慌 (Fear)"; statusEl.className = "mt-2 fs-4 badge bg-danger px-4 py-2 mb-3"; 
                 } else { 
-                    scoreEl.style.color = '#e0e6ed'; statusEl.innerText = "中立 (Neutral)"; statusEl.className = "mt-2 fs-5 badge bg-secondary"; 
+                    scoreEl.style.color = '#e0e6ed'; statusEl.innerText = "中立 (Neutral)"; statusEl.className = "mt-2 fs-4 badge bg-secondary px-4 py-2 mb-3"; 
                 }
 
-                let now = new Date().toLocaleTimeString();
-                timeData.push(now); sentimentData.push(data.sentiment_score);
-                if(timeData.length > 15) { timeData.shift(); sentimentData.shift(); }
-                Plotly.update('trend-chart', { x: [timeData], y: [sentimentData] });
-
-                const kwContainer = document.getElementById('keyword-cloud');
-                kwContainer.innerHTML = '';
-                data.hot_keywords.forEach(([key, count]) => {
-                    if (count > 0) kwContainer.innerHTML += `<span class="keyword-badge ${count >= 3 ? 'hot-keyword' : ''}">#${key} (${count})</span>`;
-                });
+                // 👉 將後端算出的「AI 理由」顯示在畫面上
+                document.getElementById('sentiment-reason').innerText = data.sentiment_reason || "無法取得 AI 理由分析";
 
                 renderPosts('signal-stream', data.signals, 'signal-post');
                 renderPosts('noise-stream', data.noises, 'noise-post');
-            } catch (e) { console.error(e); }
+            } catch (e) { console.error("Error fetching data:", e); }
         }
 
         function renderPosts(containerId, posts, className) {
@@ -115,7 +92,7 @@
             
             if (posts.length === 0) {
                 if (className === 'signal-post') {
-                    container.innerHTML = `<div class="text-center text-muted py-5" style="border: 1px dashed rgba(255,255,255,0.1); border-radius: 12px;"><i class="fas fa-search-dollar fa-3x mb-3 text-secondary"></i><br><h5 class="text-white">目前無高價值訊號</h5><small>AI 正在從 PTT、鉅亨網、動區 過濾中...</small></div>`;
+                    container.innerHTML = `<div class="text-center text-muted py-5" style="border: 1px dashed rgba(255,255,255,0.1); border-radius: 12px;"><i class="fas fa-search-dollar fa-3x mb-3 text-secondary"></i><br><h5 class="text-white">目前無高價值訊號</h5><small>AI 正在過濾全球來源中...</small></div>`;
                 } else {
                     container.innerHTML = `<div class="text-center text-muted py-5">暫無噪音數據</div>`;
                 }
@@ -129,14 +106,13 @@
                 let qColor = qScore >= 80 ? 'text-warning border-warning' : 'text-primary border-primary';
                 let scoreBadge = className === 'signal-post' ? `<span class="badge bg-transparent ${qColor} border ms-1" title="Quality Score">Q: ${qScore}</span>` : '';
                 
-                // 確保 AI 摘要一定顯示
                 let aiSummaryText = post.ai_summary || "AI 正在分析內容...";
                 let aiSummary = className === 'signal-post' ? `<div class="mt-2 p-2 rounded small text-info" style="background: rgba(56, 189, 248, 0.1);"><i class="fas fa-robot me-1"></i> ${aiSummaryText}</div>` : '';
                 
-                // 來源標籤
                 let sourceBadge = '';
                 if (post.source === 'CNYES') sourceBadge = `<span class="badge bg-info text-dark me-2">鉅亨網</span>`;
                 else if (post.source === 'BlockTempo') sourceBadge = `<span class="badge bg-warning text-dark me-2">動區</span>`;
+                else if (post.source === 'CoinDesk') sourceBadge = `<span class="badge bg-primary text-white me-2"><i class="fas fa-globe"></i> CoinDesk</span>`;
                 else sourceBadge = `<span class="badge bg-dark border border-secondary text-muted me-2">PTT</span>`;
 
                 let titleHtml = post.title;
@@ -160,7 +136,9 @@
                     </div>`;
             });
         }
-        fetchSocialData(); setInterval(fetchSocialData, 10000);
+        
+        fetchSocialData(); 
+        setInterval(fetchSocialData, 10000);
     </script>
 </body>
 </html>
