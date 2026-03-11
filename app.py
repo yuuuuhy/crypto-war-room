@@ -1,10 +1,12 @@
 from flask import Flask, render_template, jsonify, request
+from binance.spot import Spot
 import pandas as pd
 import numpy as np
 import logging
 import time
 import requests
 import re 
+from difflib import SequenceMatcher
 from datetime import datetime
 from typing import List, Dict
 from functools import wraps
@@ -56,15 +58,15 @@ def ttl_cache(ttl_seconds: int):
     return decorator
 
 # ==========================================
-# 🌐 3. 資料管理 (直接抓取原始 API)
+# 🌐 3. 資料管理 (Binance)
 # ==========================================
 class DataManager:
+    client = Spot() 
 
     @staticmethod
     def get_all_tickers() -> List[Dict]:
         try:
-            res = requests.get("https://api.binance.com/api/v3/ticker/24hr", timeout=5)
-            tickers = res.json()
+            tickers = DataManager.client.ticker_24hr()
             valid_tickers = []
             for t in tickers:
                 symbol = t['symbol']
@@ -90,40 +92,27 @@ class DataManager:
                 item['risk'] = {} 
                 final_list.append(item)
             return final_list
-        except Exception as e: 
-            print(f"⚠️ 幣安大盤 API 抓取失敗: {e}")
-            return []
+        except: return []
 
     @staticmethod
     def get_kline_safe(symbol: str):
         try:
-            url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=120"
-            res = requests.get(url, timeout=3)
-            if res.status_code == 200:
-                data = res.json()
-                return symbol, [float(k[4]) for k in data]
-            return symbol, []
-        except Exception as e:
-            print(f"⚠️ K線抓取失敗 {symbol}: {e}")
-            return symbol, []
+            klines = DataManager.client.klines(symbol, "1h", limit=120)
+            return symbol, [float(k[4]) for k in klines]
+        except: return symbol, []
 
     @staticmethod
     @ttl_cache(ttl_seconds=300) 
     def get_historical_df_parallel(top_symbols: List[str]) -> pd.DataFrame:
         data_dict = {}
-        target_pairs = [s + 'USDT' for s in top_symbols[:10]]
-        if 'BTCUSDT' not in target_pairs:
-            target_pairs.append('BTCUSDT')
-            
-        for pair in target_pairs:
-            try:
-                symbol, prices = DataManager.get_kline_safe(pair)
-                if prices: 
-                    data_dict[symbol.replace('USDT', '')] = prices
-                time.sleep(0.1) 
-            except: 
-                pass
-
+        target_pairs = [s + 'USDT' for s in (set(top_symbols) | set(Config.COIN_META.keys()) | {'BTC'})]
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            future_to_symbol = {executor.submit(DataManager.get_kline_safe, pair): pair for pair in target_pairs}
+            for future in as_completed(future_to_symbol):
+                try:
+                    symbol, prices = future.result()
+                    if prices: data_dict[symbol.replace('USDT', '')] = prices
+                except: pass
         if 'BTC' not in data_dict: return pd.DataFrame()
         min_len = min([len(v) for v in data_dict.values()])
         final_dict = {k: v[-min_len:] for k, v in data_dict.items()}
@@ -206,8 +195,7 @@ class RiskModel:
             returns = target_df.pct_change().dropna()
             if len(target_df) < 10 or returns['BTC'].std() == 0: return {"level": "base", "msg": "資料不足", "corr": 0, "score": 0, "lambda": 0, "beta": 0, "stress": {}}
 
-            corr = returns['BTC'].corr(returns[symbol])
-            
+            corr = returns['BTC'].corr(returns[symbol], method='spearman')
             u, v = returns['BTC'].rank(pct=True), returns[symbol].rank(pct=True)
             crash_together = np.sum((u <= 0.2) & (v <= 0.2))
             crash_btc = np.sum(u <= 0.2)
@@ -232,9 +220,7 @@ class RiskModel:
             elif sfi_score >= 40: level, msg = "warning", "⚠️ 中度連動"
             else: level, msg = "safe", "🟢 走勢獨立"
             return {"level": level, "msg": msg, "corr": round(corr, 2), "lambda": round(lambda_lower, 2), "beta": round(tail_beta, 2), "score": sfi_score, "stress": {"s10": predicted_price}}
-        except Exception as e: 
-            print(f"⚠️ {symbol} 運算錯誤: {e}")
-            return {"level": "base", "msg": "運算錯誤", "corr": 0, "score": 0, "lambda": 0, "beta": 0, "stress": {}}
+        except: return {"level": "base", "msg": "運算錯誤", "corr": 0, "score": 0, "lambda": 0, "beta": 0, "stress": {}}
 
 class NewsEngine:
     @staticmethod
@@ -247,7 +233,7 @@ class NewsEngine:
         return news_feed
 
 # ==========================================
-# 📡 6. 社群媒體引擎 (V9: 全球情報站)
+# 📡 6. 社群媒體引擎 (V8: 全網監控)
 # ==========================================
 class SocialMediaEngine:
     FATAL_NOISE_KEYWORDS = ["閒聊", "好爽", "畢業", "塊陶", "公園", "薯條", "便當", "信仰", "崩盤", "丸子", "蒸的", "睡飽", "財富自由", "睏霸", "韭菜", "舒服", "下去", "這波", "笑死", "甚至", "乾爹", "崩", "噴", "接刀", "水桶", "公告", "版規", "協尋", "詐騙", "入群", "群組", "怎麼看", "大家", "覺得", "是否", "請問", "請益", "新手", "小白", "這隻", "推薦", "？", "?"]
@@ -317,7 +303,9 @@ class SocialMediaEngine:
 
     @staticmethod
     def scrape_cnyes() -> List[Dict]:
-        mock_news = [{"source": "CNYES", "title": "比特幣現貨ETF淨流入創單日新高", "author": "鉅亨網", "date": datetime.now().strftime("%m/%d"), "push": 99, "link": "#", "content": "市場數據顯示..."}]
+        mock_news = [
+            {"source": "CNYES", "title": "比特幣現貨ETF淨流入創單日新高，機構資金湧入", "author": "鉅亨網", "date": datetime.now().strftime("%m/%d"), "push": 99, "link": "#", "content": "市場數據顯示..."}
+        ]
         url = "https://news.cnyes.com/news/cat/bc" 
         headers = {"User-Agent": "Mozilla/5.0"}
         posts = []
@@ -344,7 +332,9 @@ class SocialMediaEngine:
 
     @staticmethod
     def scrape_blocktempo() -> List[Dict]:
-        mock_news = [{"source": "BlockTempo", "title": "以太坊升級倒數，Layer 2 幣種噴發", "author": "動區", "date": datetime.now().strftime("%m/%d"), "push": 95, "link": "#", "content": "開發者確認進度..."}]
+        mock_news = [
+            {"source": "BlockTempo", "title": "以太坊升級倒數，Layer 2 幣種全面噴發", "author": "動區", "date": datetime.now().strftime("%m/%d"), "push": 95, "link": "#", "content": "開發者確認進度..."}
+        ]
         url = "https://www.blocktempo.com/category/cryptocurrency-market/"
         headers = {"User-Agent": "Mozilla/5.0"}
         posts = []
@@ -366,55 +356,28 @@ class SocialMediaEngine:
 
     @staticmethod
     def scrape_coindesk() -> List[Dict]:
-        mock_news = [{"source": "CoinDesk", "title": "Bitcoin ETF Sees Record Inflows", "author": "CoinDesk", "date": datetime.now().strftime("%m/%d"), "push": 99, "link": "#", "content": "Global markets react..."}]
+        mock_news = [
+            {"source": "CoinDesk", "title": "Bitcoin ETF Sees Record Inflows", "author": "CoinDesk", "date": datetime.now().strftime("%m/%d"), "push": 99, "link": "#", "content": "Global markets react to new SEC approvals..."}
+        ]
         posts = []
         try:
             feed = feedparser.parse('https://www.coindesk.com/arc/outboundfeeds/rss/')
             for entry in feed.entries[:6]:
                 posts.append({
-                    "source": "CoinDesk", "title": entry.title, "author": "CoinDesk",
-                    "date": datetime.now().strftime("%m/%d"), "push": 85,
-                    "link": entry.link, "content": entry.summary[:80] + "..." if 'summary' in entry else "CoinDesk Global News"
-                })
-            return posts if posts else mock_news
-        except: return mock_news
-
-    # 🔥 新增的國外情報員 1：Cointelegraph
-    @staticmethod
-    def scrape_cointelegraph() -> List[Dict]:
-        mock_news = [{"source": "Cointelegraph", "title": "Bitcoin surges past resistance", "author": "CT", "date": datetime.now().strftime("%m/%d"), "push": 85, "link": "#", "content": "Global markets react..."}]
-        posts = []
-        try:
-            feed = feedparser.parse('https://cointelegraph.com/rss')
-            for entry in feed.entries[:6]: 
-                posts.append({
-                    "source": "Cointelegraph", "title": entry.title, "author": "CT News",
-                    "date": datetime.now().strftime("%m/%d"), "push": 88,
-                    "link": entry.link, "content": entry.summary[:80] + "..." if 'summary' in entry else "Cointelegraph Global News"
-                })
-            return posts if posts else mock_news
-        except: return mock_news
-
-    # 🔥 新增的國外情報員 2：Decrypt
-    @staticmethod
-    def scrape_decrypt() -> List[Dict]:
-        mock_news = [{"source": "Decrypt", "title": "Ethereum Layer 2 networks hit new highs", "author": "Decrypt", "date": datetime.now().strftime("%m/%d"), "push": 82, "link": "#", "content": "The crypto ecosystem..."}]
-        posts = []
-        try:
-            feed = feedparser.parse('https://decrypt.co/feed')
-            for entry in feed.entries[:6]:
-                posts.append({
-                    "source": "Decrypt", "title": entry.title, "author": "Decrypt News",
-                    "date": datetime.now().strftime("%m/%d"), "push": 80,
-                    "link": entry.link, "content": entry.summary[:80] + "..." if 'summary' in entry else "Decrypt Global News"
+                    "source": "CoinDesk", 
+                    "title": entry.title, 
+                    "author": "CoinDesk",
+                    "date": datetime.now().strftime("%m/%d"), 
+                    "push": 85,
+                    "link": entry.link, 
+                    "content": entry.summary[:80] + "..." if 'summary' in entry else "CoinDesk Global News"
                 })
             return posts if posts else mock_news
         except: return mock_news
 
     @staticmethod
     def calc_quality_score(post: Dict) -> int:
-        # 🔥 將新加的外媒放入白名單，確保它們不會被當成雜音過濾
-        if post.get('source') in ['CNYES', 'BlockTempo', 'CoinDesk', 'Cointelegraph', 'Decrypt']: return 80 + (len(post['title']) % 15)
+        if post.get('source') in ['CNYES', 'BlockTempo', 'CoinDesk']: return 80 + (len(post['title']) % 15)
         score = 0
         title = post['title']
         content = post['content']
@@ -449,10 +412,16 @@ class SocialMediaEngine:
         THRESHOLD = 25 if high_quality_count >= 3 else 0 
         
         for post in scored_posts:
-            # 🔥 確認 VIP 媒體清單更新
-            is_media = post['source'] in ['CNYES', 'BlockTempo', 'CoinDesk', 'Cointelegraph', 'Decrypt']
+            is_media = post['source'] in ['CNYES', 'BlockTempo', 'CoinDesk']
+            
             if is_media or post['quality_score'] >= THRESHOLD:
                 post['type'] = 'signal'
+                tags = []
+                if post['source'] == 'CNYES': tags.append("MEDIA")
+                elif post['source'] == 'BlockTempo': tags.append("CRYPTO_NEWS")
+                elif post['source'] == 'CoinDesk': tags.append("GLOBAL")
+                else: tags.append("PTT_VET")
+                
                 full_text = (post['title'] + " " + post['content']).lower()
                 bullish_kws = ["新高", "突破", "買入", "大漲", "流入", "看多", "surge", "rally", "bull", "inflow", "record", "gain"]
                 bearish_kws = ["跌", "崩", "利空", "賣出", "流出", "看空", "plummet", "crash", "hack", "bear", "outflow", "drop", "loss"]
@@ -484,9 +453,16 @@ class SocialMediaEngine:
         top_kws = [k for k, v in sorted_keywords if v > 0][:3]
         kw_str = "、".join(top_kws) if top_kws else "總經數據"
 
-        if final_sentiment <= -20: sentiment_reason = f"📉 恐慌主因：市場對 {kw_str} 相關的避險情緒升溫，導致整體信心下滑。"
-        elif final_sentiment >= 20: sentiment_reason = f"🚀 貪婪主因：社群對 {kw_str} 討論熱烈，判斷有資金流入跡象。"
-        else: sentiment_reason = f"⚖️ 盤整觀望：目前多空訊號互相抵銷，市場主要聚焦於 {kw_str} 等話題。"
+        if final_sentiment <= -20:
+            bearish_titles = [p['title'] for p in signals if p['sentiment'] == 'BEARISH']
+            reason = bearish_titles[0][:20] + "..." if bearish_titles else "多項空方指標匯聚"
+            sentiment_reason = f"📉 恐慌主因：系統偵測到「{reason}」，且市場對 {kw_str} 相關的避險情緒升溫，導致整體信心下滑。"
+        elif final_sentiment >= 20:
+            bullish_titles = [p['title'] for p in signals if p['sentiment'] == 'BULLISH']
+            reason = bullish_titles[0][:20] + "..." if bullish_titles else "多項多方指標匯聚"
+            sentiment_reason = f"🚀 貪婪主因：受到「{reason}」帶動，且社群對 {kw_str} 討論熱烈，判斷有資金流入跡象。"
+        else:
+            sentiment_reason = f"⚖️ 盤整觀望：目前多空訊號互相抵銷，市場主要聚焦於 {kw_str} 等話題，等待下一個明確的趨勢表態。"
         
         return {
             "sentiment_score": int(final_sentiment), "signal_count": len(signals),
@@ -495,7 +471,7 @@ class SocialMediaEngine:
         }
 
 # ==========================================
-# 🚦 7. Routes 
+# 🚦 7. Routes (所有路由全數保留)
 # ==========================================
 @app.route('/')
 def index(): return render_template('index.html')
@@ -513,24 +489,19 @@ def social_sentiment_page(): return render_template('social_sentiment.html')
 @ttl_cache(ttl_seconds=60) 
 def get_social_data():
     all_posts = []
-    # 🔥 將跑車數量提升到 6 台，同時並行出發抓取 6 大情報網
-    with ThreadPoolExecutor(max_workers=6) as executor:
-        futures = [
-            executor.submit(SocialMediaEngine.scrape_ptt),
-            executor.submit(SocialMediaEngine.scrape_cnyes),
-            executor.submit(SocialMediaEngine.scrape_blocktempo),
-            executor.submit(SocialMediaEngine.scrape_coindesk),
-            executor.submit(SocialMediaEngine.scrape_cointelegraph),
-            executor.submit(SocialMediaEngine.scrape_decrypt)
-        ]
-        
-        for future in as_completed(futures):
-            try: 
-                result = future.result()
-                if result:
-                    all_posts.extend(result)
-            except: 
-                pass
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        f1 = executor.submit(SocialMediaEngine.scrape_ptt)
+        f2 = executor.submit(SocialMediaEngine.scrape_cnyes)
+        f3 = executor.submit(SocialMediaEngine.scrape_blocktempo)
+        f4 = executor.submit(SocialMediaEngine.scrape_coindesk)
+        try: all_posts.extend(f1.result())
+        except: pass
+        try: all_posts.extend(f2.result())
+        except: pass
+        try: all_posts.extend(f3.result())
+        except: pass
+        try: all_posts.extend(f4.result())
+        except: pass
 
     if not all_posts:
         return jsonify({
@@ -577,20 +548,15 @@ def get_coin_details(symbol):
 def live_data():
     crypto_list = DataManager.get_all_tickers()
     if not crypto_list: return jsonify({"timestamp": "--:--", "data": [], "exchange_rate": Config.DEFAULT_EXCHANGE_RATE})
-    
     top_symbols = [c['symbol'] for c in crypto_list]
     history_df = DataManager.get_historical_df_parallel(top_symbols)
     current_rate = DataManager.get_realtime_exchange_rate()
-    
     for coin in crypto_list:
         symbol = coin['symbol']
         price_usd = coin['price_usd']
-        if symbol == 'BTC': 
-            coin['risk'] = {"level": "base", "msg": "⚓ 市場基準", "corr": 1.0, "score": 0, "lambda": 0, "beta": 1, "stress": {"s10": price_usd * 0.9}}
-        else: 
-            coin['risk'] = RiskModel.calculate_copula_risk(symbol, history_df, coin.get('is_stable', False), price_usd)
+        if symbol == 'BTC': coin['risk'] = {"level": "base", "msg": "⚓ 市場基準", "corr": 1.0, "score": 0, "lambda": 0, "beta": 1, "stress": {"s10": price_usd * 0.9}}
+        else: coin['risk'] = RiskModel.calculate_copula_risk(symbol, history_df, coin.get('is_stable', False), price_usd)
         coin['price_twd'] = price_usd * current_rate
-        
     return jsonify({
         "timestamp": datetime.now().strftime("%H:%M:%S"),
         "data": crypto_list, 
@@ -599,4 +565,4 @@ def live_data():
     })
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', debug=True, port=5000)
+    app.run(debug=True, port=5000)
