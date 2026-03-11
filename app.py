@@ -248,7 +248,8 @@ class NewsEngine:
         top_movers = sorted([c for c in crypto_data if c.get('change') is not None], key=lambda x: abs(x['change']), reverse=True)[:3]
         for c in top_movers:
             t, s = (f"【AI看多】{c['symbol']} 突破阻力", "positive") if c['change']>5 else (f"【風險】{c['symbol']} 賣壓湧現", "negative") if c['change']<-5 else (f"【觀察】{c['symbol']} 盤整中", "neutral")
-            news_feed.append({"time": datetime.now().strftime("%H:%M"), "title": t, "sentiment": s})
+            # 👇 這裡的 time 已經替換成空字串
+            news_feed.append({"time": "", "title": t, "sentiment": s})
         return news_feed
 
 # ==========================================
@@ -542,7 +543,7 @@ def get_coin_details(symbol):
 @ttl_cache(ttl_seconds=Config.CACHE_TTL)
 def live_data():
     crypto_list = DataManager.get_all_tickers()
-    if not crypto_list: return jsonify({"timestamp": "--:--", "data": [], "exchange_rate": Config.DEFAULT_EXCHANGE_RATE})
+    if not crypto_list: return jsonify({"timestamp": "", "data": [], "exchange_rate": Config.DEFAULT_EXCHANGE_RATE})
     
     top_symbols = [c['symbol'] for c in crypto_list]
     history_df = DataManager.get_historical_df_parallel(top_symbols)
@@ -558,7 +559,7 @@ def live_data():
         coin['price_twd'] = price_usd * current_rate
         
     return jsonify({
-        "timestamp": datetime.now().strftime("%H:%M:%S"),
+        "timestamp": "",  # 👇 這裡的 time 已經替換成空字串
         "data": crypto_list, 
         "exchange_rate": current_rate,
         "news": NewsEngine.generate_sentiment_news(crypto_list)
