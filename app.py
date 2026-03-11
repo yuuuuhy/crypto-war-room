@@ -56,14 +56,13 @@ def ttl_cache(ttl_seconds: int):
     return decorator
 
 # ==========================================
-# 🌐 3. 資料管理 (直接抓取原始 API，不佔用連線池)
+# 🌐 3. 資料管理 (直接抓取原始 API)
 # ==========================================
 class DataManager:
 
     @staticmethod
     def get_all_tickers() -> List[Dict]:
         try:
-            # 🚀 直接要資料，不透過官方套件，絕不塞車
             res = requests.get("https://api.binance.com/api/v3/ticker/24hr", timeout=5)
             tickers = res.json()
             valid_tickers = []
@@ -98,7 +97,6 @@ class DataManager:
     @staticmethod
     def get_kline_safe(symbol: str):
         try:
-            # 🚀 自己拼網址抓 K 線，抓完就跑！
             url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=120"
             res = requests.get(url, timeout=3)
             if res.status_code == 200:
@@ -113,12 +111,10 @@ class DataManager:
     @ttl_cache(ttl_seconds=300) 
     def get_historical_df_parallel(top_symbols: List[str]) -> pd.DataFrame:
         data_dict = {}
-        # 🔥 降壓秘訣：只抓前 10 名的熱門幣，保護免費主機
         target_pairs = [s + 'USDT' for s in top_symbols[:10]]
         if 'BTCUSDT' not in target_pairs:
             target_pairs.append('BTCUSDT')
             
-        # 🔥 降壓秘訣：乖乖排隊抓資料
         for pair in target_pairs:
             try:
                 symbol, prices = DataManager.get_kline_safe(pair)
@@ -210,7 +206,6 @@ class RiskModel:
             returns = target_df.pct_change().dropna()
             if len(target_df) < 10 or returns['BTC'].std() == 0: return {"level": "base", "msg": "資料不足", "corr": 0, "score": 0, "lambda": 0, "beta": 0, "stress": {}}
 
-            # 🔥 移除 spearman，改用內建安全公式防崩潰
             corr = returns['BTC'].corr(returns[symbol])
             
             u, v = returns['BTC'].rank(pct=True), returns[symbol].rank(pct=True)
@@ -252,7 +247,7 @@ class NewsEngine:
         return news_feed
 
 # ==========================================
-# 📡 6. 社群媒體引擎 (V8: 全網監控)
+# 📡 6. 社群媒體引擎 (V9: 全球情報站)
 # ==========================================
 class SocialMediaEngine:
     FATAL_NOISE_KEYWORDS = ["閒聊", "好爽", "畢業", "塊陶", "公園", "薯條", "便當", "信仰", "崩盤", "丸子", "蒸的", "睡飽", "財富自由", "睏霸", "韭菜", "舒服", "下去", "這波", "笑死", "甚至", "乾爹", "崩", "噴", "接刀", "水桶", "公告", "版規", "協尋", "詐騙", "入群", "群組", "怎麼看", "大家", "覺得", "是否", "請問", "請益", "新手", "小白", "這隻", "推薦", "？", "?"]
@@ -384,9 +379,42 @@ class SocialMediaEngine:
             return posts if posts else mock_news
         except: return mock_news
 
+    # 🔥 新增的國外情報員 1：Cointelegraph
+    @staticmethod
+    def scrape_cointelegraph() -> List[Dict]:
+        mock_news = [{"source": "Cointelegraph", "title": "Bitcoin surges past resistance", "author": "CT", "date": datetime.now().strftime("%m/%d"), "push": 85, "link": "#", "content": "Global markets react..."}]
+        posts = []
+        try:
+            feed = feedparser.parse('https://cointelegraph.com/rss')
+            for entry in feed.entries[:6]: 
+                posts.append({
+                    "source": "Cointelegraph", "title": entry.title, "author": "CT News",
+                    "date": datetime.now().strftime("%m/%d"), "push": 88,
+                    "link": entry.link, "content": entry.summary[:80] + "..." if 'summary' in entry else "Cointelegraph Global News"
+                })
+            return posts if posts else mock_news
+        except: return mock_news
+
+    # 🔥 新增的國外情報員 2：Decrypt
+    @staticmethod
+    def scrape_decrypt() -> List[Dict]:
+        mock_news = [{"source": "Decrypt", "title": "Ethereum Layer 2 networks hit new highs", "author": "Decrypt", "date": datetime.now().strftime("%m/%d"), "push": 82, "link": "#", "content": "The crypto ecosystem..."}]
+        posts = []
+        try:
+            feed = feedparser.parse('https://decrypt.co/feed')
+            for entry in feed.entries[:6]:
+                posts.append({
+                    "source": "Decrypt", "title": entry.title, "author": "Decrypt News",
+                    "date": datetime.now().strftime("%m/%d"), "push": 80,
+                    "link": entry.link, "content": entry.summary[:80] + "..." if 'summary' in entry else "Decrypt Global News"
+                })
+            return posts if posts else mock_news
+        except: return mock_news
+
     @staticmethod
     def calc_quality_score(post: Dict) -> int:
-        if post.get('source') in ['CNYES', 'BlockTempo', 'CoinDesk']: return 80 + (len(post['title']) % 15)
+        # 🔥 將新加的外媒放入白名單，確保它們不會被當成雜音過濾
+        if post.get('source') in ['CNYES', 'BlockTempo', 'CoinDesk', 'Cointelegraph', 'Decrypt']: return 80 + (len(post['title']) % 15)
         score = 0
         title = post['title']
         content = post['content']
@@ -421,7 +449,8 @@ class SocialMediaEngine:
         THRESHOLD = 25 if high_quality_count >= 3 else 0 
         
         for post in scored_posts:
-            is_media = post['source'] in ['CNYES', 'BlockTempo', 'CoinDesk']
+            # 🔥 確認 VIP 媒體清單更新
+            is_media = post['source'] in ['CNYES', 'BlockTempo', 'CoinDesk', 'Cointelegraph', 'Decrypt']
             if is_media or post['quality_score'] >= THRESHOLD:
                 post['type'] = 'signal'
                 full_text = (post['title'] + " " + post['content']).lower()
@@ -484,19 +513,24 @@ def social_sentiment_page(): return render_template('social_sentiment.html')
 @ttl_cache(ttl_seconds=60) 
 def get_social_data():
     all_posts = []
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        f1 = executor.submit(SocialMediaEngine.scrape_ptt)
-        f2 = executor.submit(SocialMediaEngine.scrape_cnyes)
-        f3 = executor.submit(SocialMediaEngine.scrape_blocktempo)
-        f4 = executor.submit(SocialMediaEngine.scrape_coindesk)
-        try: all_posts.extend(f1.result())
-        except: pass
-        try: all_posts.extend(f2.result())
-        except: pass
-        try: all_posts.extend(f3.result())
-        except: pass
-        try: all_posts.extend(f4.result())
-        except: pass
+    # 🔥 將跑車數量提升到 6 台，同時並行出發抓取 6 大情報網
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        futures = [
+            executor.submit(SocialMediaEngine.scrape_ptt),
+            executor.submit(SocialMediaEngine.scrape_cnyes),
+            executor.submit(SocialMediaEngine.scrape_blocktempo),
+            executor.submit(SocialMediaEngine.scrape_coindesk),
+            executor.submit(SocialMediaEngine.scrape_cointelegraph),
+            executor.submit(SocialMediaEngine.scrape_decrypt)
+        ]
+        
+        for future in as_completed(futures):
+            try: 
+                result = future.result()
+                if result:
+                    all_posts.extend(result)
+            except: 
+                pass
 
     if not all_posts:
         return jsonify({
