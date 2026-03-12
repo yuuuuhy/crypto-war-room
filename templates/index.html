@@ -17,8 +17,6 @@
         .up { color: #4ade80; font-weight: bold; }
         .down { color: #fb7185; font-weight: bold; }
         .crypto-name { font-size: 1.3rem; font-weight: bold; color: #fff; }
-        .btn-currency { background-color: #0d2339; color: #94a3b8; border: 1px solid #3e6b99; }
-        .btn-currency.active { background-color: #38bdf8; color: #0a1929; border-color: #38bdf8; font-weight: bold; }
         .risk-spectrum-container { width: 140px; height: 8px; background: #1e293b; border-radius: 4px; position: relative; margin-top: 5px; }
         .risk-gradient { width: 100%; height: 100%; background: linear-gradient(90deg, #4ade80 0%, #facc15 50%, #fb7185 100%); border-radius: 4px; opacity: 0.8; }
         .risk-pointer { width: 6px; height: 12px; background: #fff; position: absolute; top: -2px; transform: translateX(-50%); border-radius: 2px; }
@@ -30,17 +28,7 @@
     <div class="container-fluid py-4" style="max-width: 96%; height: 100vh; display: flex; flex-direction: column;">
         <div class="d-flex justify-content-between align-items-end mb-3">
             <div><h2 class="fw-bold mb-0 text-white">💎 ZenInvest 監控系統</h2></div>
-            <div class="text-end">
-                <div class="btn-group mb-2">
-                    <button type="button" class="btn btn-currency active" id="btn-twd" onclick="setCurrency('TWD')">TWD</button>
-                    <button type="button" class="btn btn-currency" id="btn-usd" onclick="setCurrency('USD')">USD</button>
-                </div>
-                <div class="d-flex align-items-center justify-content-end gap-3">
-                    <span id="update-time" class="fs-4 fw-bold text-white">--:--:--</span>
-                    <button id="refresh-btn" class="btn btn-outline-info fw-bold" onclick="manualRefresh()">🔄 更新</button>
-                </div>
             </div>
-        </div>
 
         <div class="d-flex gap-2 mb-3">
             <input type="text" id="search-input" class="form-control bg-dark text-white border-secondary" placeholder="🔍 搜尋資產..." style="max-width: 300px;">
@@ -50,7 +38,7 @@
         <div class="table-responsive rounded shadow-lg mb-3 flex-grow-1" style="background-color: #0d2339;">
             <table class="table table-hover align-middle mb-0">
                 <thead>
-                    <tr><th class="text-center">排名</th><th>資產名稱</th><th>即時價格 (<span id="price-header">TWD</span>)</th><th>24H 漲跌幅</th><th>風險指數 (SFI)</th></tr>
+                    <tr><th class="text-center">排名</th><th>資產名稱</th><th>即時價格 (USD)</th><th>24H 漲跌幅</th><th>風險指數 (SFI)</th></tr>
                 </thead>
                 <tbody id="crypto-body"></tbody>
             </table>
@@ -58,23 +46,26 @@
     </div>
 
     <script>
-        let allCryptoData = [], currentCurrency = 'TWD';
+        let allCryptoData = [];
         document.getElementById('search-input').addEventListener('input', renderTable);
-        function setCurrency(curr) { currentCurrency = curr; document.getElementById('price-header').innerText = curr; document.querySelectorAll('.btn-currency').forEach(btn => btn.classList.remove('active')); if(curr === 'TWD') document.getElementById('btn-twd').classList.add('active'); else document.getElementById('btn-usd').classList.add('active'); renderTable(); }
+        
         async function fetchData() {
             try {
                 const response = await fetch('/api/coingecko');
                 const result = await response.json();
-                document.getElementById('update-time').innerText = result.timestamp;
+                
+                // 這裡也把找尋時間標籤的程式碼刪掉了，預防閃退
                 if (!result.data) return;
                 allCryptoData = result.data;
                 renderTable();
             } catch (error) { console.error(error); }
         }
+        
         function renderTable() {
             const tbody = document.getElementById('crypto-body'); tbody.innerHTML = ''; 
             const searchText = document.getElementById('search-input').value.toLowerCase().trim();
             const filteredData = allCryptoData.filter(c => c.name.toLowerCase().includes(searchText) || c.cn_name.toLowerCase().includes(searchText)).slice(0, 50);
+            
             filteredData.forEach(coin => {
                 let changeColor = coin.change >= 0 ? 'up' : 'down';
                 let riskDisplay = '';
@@ -85,12 +76,16 @@
                     let params = `name=${encodeURIComponent(coin.cn_name)}&corr=${coin.risk.corr}&score=${score}&beta=${coin.risk.beta}&lambda=${coin.risk.lambda}&level=${coin.risk.level}`;
                     riskDisplay = `<div class="d-flex align-items-center"><div><div class="d-flex justify-content-between mb-1" style="width: 140px;"><span style="font-size: 0.9rem; font-weight: bold; color: ${scoreColor};">${msg}</span><span style="font-size: 0.8rem; color: #64748b;">${score}/100</span></div><div class="risk-spectrum-container"><div class="risk-gradient"></div><div class="risk-pointer" style="left: ${score}%;"></div></div></div>${coin.symbol !== 'BTC' ? `<a href="/analysis/${coin.symbol}?${params}" class="btn-analyze ms-2">📊 分析</a>` : ''}</div>`;
                 }
-                let price = currentCurrency === 'TWD' ? coin.price_twd : coin.price_usd;
-                let symbol = currentCurrency === 'TWD' ? 'NT$' : '$';
+                
+                let price = coin.price_usd;
+                let symbol = '$';
                 tbody.innerHTML += `<tr class="update-flash"><td class="text-center text-muted fw-bold">${coin.rank}</td><td><div><div class="crypto-name">${coin.cn_name}</div><div class="crypto-symbol">${coin.symbol}</div></div></td><td class="fw-bold fs-5 text-white">${symbol} ${price.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 4})}</td><td class="${changeColor}">${coin.change ? coin.change.toFixed(2) : '0.00'}%</td><td>${riskDisplay}</td></tr>`;
             });
         }
-        setInterval(fetchData, 60000); async function manualRefresh() { await fetchData(); } fetchData(); 
+        
+        // 保持每 60 秒全自動無聲更新
+        setInterval(fetchData, 60000); 
+        fetchData(); 
     </script>
 </body>
 </html>
