@@ -113,8 +113,8 @@ class DataManager:
     @ttl_cache(ttl_seconds=300) 
     def get_historical_df_parallel(top_symbols: List[str]) -> pd.DataFrame:
         data_dict = {}
-        # 🔥 降壓秘訣：只抓前 10 名的熱門幣，保護免費主機
-        target_pairs = [s + 'USDT' for s in top_symbols[:10]]
+        # 🔥 降壓秘訣：只抓前 50 名的熱門幣，保護免費主機
+        target_pairs = [s + 'USDT' for s in top_symbols[:50]]
         if 'BTCUSDT' not in target_pairs:
             target_pairs.append('BTCUSDT')
             
